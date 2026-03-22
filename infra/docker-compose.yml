@@ -1,0 +1,29 @@
+version: "3.9"
+
+services:
+  redis:
+    image: redis:7
+    container_name: copilot-redis
+    ports:
+      - "6379:6379"
+
+  postgres:
+    image: postgres:15
+    container_name: copilot-postgres
+    environment:
+      POSTGRES_DB: copilot
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: admin
+    ports:
+      - "5432:5432"
+
+  ollama:
+    image: ollama/ollama
+    container_name: copilot-ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+
+volumes:
+  ollama_data:

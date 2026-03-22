@@ -1,0 +1,42 @@
+[
+  {
+    "user_id": "USR1",
+    "name": "Abhilash Reddy",
+    "email": "abhilash@test.com",
+    "phone": "9999999991",
+    "address": "Pune, India",
+    "wallet_balance": 500
+  },
+  {
+    "user_id": "USR2",
+    "name": "Rahul Sharma",
+    "email": "rahul@test.com",
+    "phone": "9999999992",
+    "address": "Mumbai, India",
+    "wallet_balance": 0
+  },
+  {
+    "user_id": "USR3",
+    "name": "Sneha Iyer",
+    "email": "sneha@test.com",
+    "phone": "9999999993",
+    "address": "Bangalore, India",
+    "wallet_balance": 1200
+  },
+  {
+    "user_id": "USR4",
+    "name": "Karan Mehta",
+    "email": "karan@test.com",
+    "phone": "9999999994",
+    "address": "Delhi, India",
+    "wallet_balance": 200
+  },
+  {
+    "user_id": "USR5",
+    "name": "Priya Nair",
+    "email": "priya@test.com",
+    "phone": "9999999995",
+    "address": "Chennai, India",
+    "wallet_balance": 0
+  }
+]

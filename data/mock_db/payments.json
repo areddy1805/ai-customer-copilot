@@ -1,0 +1,32 @@
+[
+  {
+    "payment_id": "PAY1",
+    "order_id": "ORD1",
+    "method": "prepaid",
+    "status": "completed"
+  },
+  {
+    "payment_id": "PAY2",
+    "order_id": "ORD2",
+    "method": "prepaid",
+    "status": "completed"
+  },
+  {
+    "payment_id": "PAY3",
+    "order_id": "ORD3",
+    "method": "cod",
+    "status": "pending"
+  },
+  {
+    "payment_id": "PAY4",
+    "order_id": "ORD4",
+    "method": "prepaid",
+    "status": "completed"
+  },
+  {
+    "payment_id": "PAY5",
+    "order_id": "ORD5",
+    "method": "cod",
+    "status": "pending"
+  }
+]

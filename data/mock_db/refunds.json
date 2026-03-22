@@ -1,0 +1,16 @@
+[
+  {
+    "refund_id": "REF1",
+    "order_id": "ORD3",
+    "status": "completed",
+    "amount": 1999,
+    "mode": "wallet"
+  },
+  {
+    "refund_id": "REF2",
+    "order_id": "ORD6",
+    "status": "processing",
+    "amount": 999,
+    "mode": "original_method"
+  }
+]

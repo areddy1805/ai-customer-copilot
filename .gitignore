@@ -1,0 +1,70 @@
+# ------------------------------
+# Python
+# ------------------------------
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+
+# Virtual environment
+.venv/
+venv/
+env/
+
+# ------------------------------
+# Environment & Secrets
+# ------------------------------
+.env
+.env.*
+!.env.example
+
+# ------------------------------
+# Logs & Runtime Files
+# ------------------------------
+*.log
+logs/
+*.pid
+
+# ------------------------------
+# OS / Editor Noise
+# ------------------------------
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# ------------------------------
+# Docker / Local Volumes
+# ------------------------------
+ollama_data/
+*.db
+*.sqlite3
+
+# ------------------------------
+# Testing / Coverage
+# ------------------------------
+.coverage
+htmlcov/
+.pytest_cache/
+
+# ------------------------------
+# Build / Distribution
+# ------------------------------
+dist/
+build/
+*.egg-info/
+
+# ------------------------------
+# Node (future Angular frontend)
+# ------------------------------
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# ------------------------------
+# Temporary Files
+# ------------------------------
+*.tmp
+*.swp
