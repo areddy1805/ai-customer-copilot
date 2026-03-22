@@ -3,16 +3,13 @@ import json
 from typing import Optional, Generator
 from app.core.config import settings
 
+
 class OllamaClient:
     def __init__(self):
         self.base_url = settings.ollama_base_url
-    
+
     def generate(
-        self,
-        model: str,
-        prompt: str,
-        stream: bool = False,
-        timeout: int = 60
+        self, model: str, prompt: str, stream: bool = False, timeout: int = 60
     ) -> str:
 
         if not isinstance(prompt, str):
@@ -24,10 +21,7 @@ class OllamaClient:
             "model": model,
             "prompt": prompt,
             "stream": stream,
-            "options": {
-                "temperature": 0.2,
-                "num_predict": 100
-            }
+            "options": {"temperature": 0.2, "num_predict": 100},
         }
 
         try:
@@ -45,13 +39,7 @@ class OllamaClient:
         except requests.exceptions.RequestException as e:
             raise Exception(f"LLM request failed: {str(e)}")
 
-
-    def generate_stream(
-        self,
-        model: str,
-        prompt: str,
-        timeout: int = 60
-    ):
+    def generate_stream(self, model: str, prompt: str, timeout: int = 60):
 
         if not isinstance(prompt, str):
             raise ValueError(f"Prompt must be string, got {type(prompt)}")
@@ -62,14 +50,13 @@ class OllamaClient:
             "model": model,
             "prompt": prompt,
             "stream": True,
-            "options": {
-                "temperature": 0.2,
-                "num_predict": 100
-            }
+            "options": {"temperature": 0.2, "num_predict": 100},
         }
 
         try:
-            with requests.post(url, json=payload, stream=True, timeout=timeout) as response:
+            with requests.post(
+                url, json=payload, stream=True, timeout=timeout
+            ) as response:
 
                 if response.status_code != 200:
                     raise Exception(f"Ollama error: {response.text}")
