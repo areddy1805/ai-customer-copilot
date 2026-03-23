@@ -4,6 +4,7 @@ from app.orchestrator.router import Router
 from app.llm.service import LLMService
 from app.llm.models import TaskType
 from app.memory.memory_service import MemoryService
+from app.rag.service import RAGService
 
 
 class Orchestrator:
@@ -12,6 +13,7 @@ class Orchestrator:
         self.router = Router()
         self.llm = LLMService()
         self.memory = MemoryService()
+        self.rag = RAGService()
 
     def run(self, user_query: str, session_id: str) -> ConversationState:
         """
@@ -48,7 +50,8 @@ class Orchestrator:
             state.final_response = "This request requires backend processing (tool execution not implemented yet)."
 
         elif route == "rag":
-            state.final_response = "Knowledge retrieval not implemetned yet."
+            response = self.rag.generate(user_query)
+            state.final_response = response
 
         else:
             state.final_response = "Sorry, something went wrong."

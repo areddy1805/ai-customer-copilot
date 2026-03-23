@@ -16,11 +16,11 @@ class Router:
         if intent == "order_status":
             return "tool"
         elif intent == "refund_request":
-            return "tool"
+            return "rag"
         elif intent == "cancellation":
             return "tool"
         elif intent == "delivery_issue":
-            return "tool"
+            return "rag"
         elif intent == "account_update":
             return "tool"
         elif intent == "general":
