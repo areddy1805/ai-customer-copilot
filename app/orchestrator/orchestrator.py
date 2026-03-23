@@ -8,6 +8,7 @@ from app.rag.service import RAGService
 from app.tools.order_tool import OrderTool
 from app.tools.refund_tool import RefundTool
 from app.tools.ticket_tool import TicketTool
+from app.guard.policy_guard import PolicyGuard
 
 import re
 
@@ -23,10 +24,25 @@ class Orchestrator:
         self.order_tool = OrderTool()
         self.refund_tool = RefundTool()
         self.ticket_tool = TicketTool()
+        self.guard = PolicyGuard()
 
     def run(self, user_query: str, session_id: str) -> ConversationState:
 
         state = ConversationState(user_query=user_query)
+
+        # -------- GUARD --------
+        guard_result = self.guard.evaluate(user_query, intent="unknown")
+
+        if not guard_result["allowed"]:
+
+            state.final_response = "Your request cannot be processed due to security or validation constraints."
+            state.metadata["execution"] = "blocked"
+            state.metadata["guard_reason"] = guard_result["reason"]
+
+            self.memory.add_message(session_id, "user", user_query)
+            self.memory.add_message(session_id, "assistant", state.final_response)
+
+            return state
 
         # -------- LOAD MEMORY --------
         history = self.memory.get_messages(session_id)
@@ -36,18 +52,32 @@ class Orchestrator:
         intent = self.classifier.classify(user_query)
         state.intent = intent
 
+        guard_result = self.guard.evaluate(user_query, intent=intent)
+
+        # -------- FALLBACK --------
+        if guard_result["action"] == "fallback":
+            response = self.rag.generate(user_query)
+            state.final_response = response
+            state.metadata["execution"] = "rag"
+            state.metadata["guard_reason"] = guard_result["reason"]
+
+            self.memory.add_message(session_id, "user", user_query)
+            self.memory.add_message(session_id, "assistant", state.final_response)
+
+            return state
+
         # -------- ROUTE (COARSE) --------
         route = self.router.route(intent)
         state.metadata["route"] = route
 
         # -------- BUILD QUERY --------
         query = f"""
-Conversation History:
-{history_text}
+                Conversation History:
+                {history_text}
 
-Current Query:
-{user_query}
-"""
+                Current Query:
+                {user_query}
+                """
 
         # -------- DIRECT LLM --------
         if route == "direct_llm":
@@ -65,18 +95,6 @@ Current Query:
         elif route == "tool":
 
             order_id = self._extract_order_id(user_query)
-
-            # -------- HYBRID OVERRIDE → RAG --------
-            if intent in ["refund_request", "delivery_issue"] and not order_id:
-                response = self.rag.generate(user_query)
-                state.final_response = response
-                state.metadata["execution"] = "rag"
-
-                # SAVE MEMORY
-                self.memory.add_message(session_id, "user", user_query)
-                self.memory.add_message(session_id, "assistant", state.final_response)
-
-                return state  # HARD EXIT
 
             # -------- TOOL EXECUTION --------
             tool_response = None
