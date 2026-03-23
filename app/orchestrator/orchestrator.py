@@ -5,6 +5,11 @@ from app.llm.service import LLMService
 from app.llm.models import TaskType
 from app.memory.memory_service import MemoryService
 from app.rag.service import RAGService
+from app.tools.order_tool import OrderTool
+from app.tools.refund_tool import RefundTool
+from app.tools.ticket_tool import TicketTool
+
+import re
 
 
 class Orchestrator:
@@ -15,52 +20,132 @@ class Orchestrator:
         self.memory = MemoryService()
         self.rag = RAGService()
 
+        self.order_tool = OrderTool()
+        self.refund_tool = RefundTool()
+        self.ticket_tool = TicketTool()
+
     def run(self, user_query: str, session_id: str) -> ConversationState:
-        """
-        Main execution pipeline
-        """
 
         state = ConversationState(user_query=user_query)
 
+        # -------- LOAD MEMORY --------
         history = self.memory.get_messages(session_id)
         history_text = self._format_history(history) if history else ""
 
+        # -------- CLASSIFY --------
         intent = self.classifier.classify(user_query)
         state.intent = intent
 
+        # -------- ROUTE (COARSE) --------
         route = self.router.route(intent)
         state.metadata["route"] = route
 
+        # -------- BUILD QUERY --------
         query = f"""
-                Conversation History:
-                {history_text}
+Conversation History:
+{history_text}
 
-                Current Query:
-                {user_query}
-                """
+Current Query:
+{user_query}
+"""
 
+        # -------- DIRECT LLM --------
         if route == "direct_llm":
             response = self.llm.generate(task=TaskType.GENERAL, query=query)
             state.final_response = response
+            state.metadata["execution"] = "direct_llm"
 
-            self.memory.add_message(session_id, "user", user_query)
-            self.memory.add_message(session_id, "assistant", state.final_response)
-
-        elif route == "tool":
-            state.final_response = "This request requires backend processing (tool execution not implemented yet)."
-
+        # -------- RAG (EXPLICIT) --------
         elif route == "rag":
             response = self.rag.generate(user_query)
             state.final_response = response
+            state.metadata["execution"] = "rag"
+
+        # -------- TOOL (HYBRID LOGIC) --------
+        elif route == "tool":
+
+            order_id = self._extract_order_id(user_query)
+
+            # -------- HYBRID OVERRIDE → RAG --------
+            if intent in ["refund_request", "delivery_issue"] and not order_id:
+                response = self.rag.generate(user_query)
+                state.final_response = response
+                state.metadata["execution"] = "rag"
+
+                # SAVE MEMORY
+                self.memory.add_message(session_id, "user", user_query)
+                self.memory.add_message(session_id, "assistant", state.final_response)
+
+                return state  # HARD EXIT
+
+            # -------- TOOL EXECUTION --------
+            tool_response = None
+
+            # ORDER STATUS
+            if intent == "order_status":
+                if not order_id:
+                    response = self.llm.generate(
+                        task=TaskType.GENERAL, query="Please provide a valid order ID."
+                    )
+                    state.final_response = response
+                    state.metadata["execution"] = "direct_llm"
+                    return state
+
+                tool_response = self.order_tool.get_order_status({"order_id": order_id})
+
+            # REFUND
+            elif intent == "refund_request":
+                tool_response = self.refund_tool.process_refund({"order_id": order_id})
+
+            # DELIVERY / SUPPORT
+            elif intent in ["delivery_issue", "account_update"]:
+                tool_response = self.ticket_tool.create_ticket(
+                    {"user_id": "USR1", "order_id": order_id, "issue": intent}
+                )
+
+            # -------- FORMAT TOOL RESPONSE --------
+            if tool_response and tool_response.success:
+                response = self.llm.generate(
+                    task=TaskType.TOOL_RESPONSE,
+                    query=user_query,
+                    context=self._format_tool_data(tool_response.data),
+                )
+            else:
+                error_msg = tool_response.error if tool_response else "Unknown error"
+                response = self.llm.generate(
+                    task=TaskType.TOOL_RESPONSE,
+                    query=user_query,
+                    context=f"Error: {error_msg}",
+                )
+
+            state.final_response = response
+            state.metadata["execution"] = "tool"
 
         else:
             state.final_response = "Sorry, something went wrong."
+            state.metadata["execution"] = "error"
+
+        # -------- SAVE MEMORY --------
+        self.memory.add_message(session_id, "user", user_query)
+        self.memory.add_message(session_id, "assistant", state.final_response)
 
         return state
+
+    # -------- HELPERS --------
 
     def _format_history(self, history):
         lines = []
         for msg in history:
             role = msg["role"].capitalize()
             lines.append(f"{role}: {msg['content']}")
+        return "\n".join(lines)
+
+    def _extract_order_id(self, query: str):
+        match = re.search(r"ORD\d+", query.upper())
+        return match.group(0) if match else None
+
+    def _format_tool_data(self, data: dict) -> str:
+        lines = []
+        for k, v in data.items():
+            lines.append(f"{k}: {v}")
         return "\n".join(lines)

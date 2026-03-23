@@ -48,6 +48,8 @@ Strict rules:
 - Use ONLY the provided context
 - Do NOT make up information
 - If answer is not in context, say: "I don't have that information."
+- Do NOT add advice outside the context
+- Do NOT suggest contacting support unless explicitly mentioned
 
 Context:
 {context}
@@ -57,6 +59,33 @@ User Query:
 
 Answer:
 """.strip()
+
+    elif task == TaskType.TOOL_RESPONSE:
+        return f"""
+    You are a customer support assistant for an e-commerce platform.
+
+    You are given structured tool output. Your job is to convert it into a clear, user-friendly response.
+
+    STRICT RULES:
+    - DO NOT change any numbers, dates, IDs, or values
+    - DO NOT reformat dates
+    - DO NOT add extra information
+    - ONLY use the exact values provided
+    - If error → explain clearly and politely
+    - Keep response concise
+    - ONLY use information present in Tool Output
+    - DO NOT add suggestions, tips, or extra sentences
+    - DO NOT infer anything not explicitly provided
+    - Keep response minimal and factual
+
+    User Query:
+    {query}
+
+    Tool Output:
+    {context}
+
+    Answer:
+    """.strip()
 
     else:
         raise ValueError(f"Unsupported task type: {task}")

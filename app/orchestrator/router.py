@@ -1,6 +1,6 @@
 from typing import Literal
 
-Route = Literal["tool", "rag", "diirect_llm"]
+Route = Literal["tool", "rag", "direct_llm"]
 
 
 class Router:
@@ -15,14 +15,19 @@ class Router:
 
         if intent == "order_status":
             return "tool"
+
         elif intent == "refund_request":
-            return "rag"
+            return "tool"
+
         elif intent == "cancellation":
             return "tool"
+
         elif intent == "delivery_issue":
-            return "rag"
+            return "tool"
+
         elif intent == "account_update":
             return "tool"
+
         elif intent == "general":
             return "direct_llm"
 
