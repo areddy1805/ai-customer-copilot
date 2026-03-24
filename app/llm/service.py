@@ -16,9 +16,16 @@ class LLMService:
 
         prompt = build_prompt(task=task, query=query, context=context)
 
-        response = self.client.generate(model=model, prompt=prompt)
+        try:
+            response = self.client.generate(model=model, prompt=prompt)
 
-        return response
+            # -------- EMPTY RESPONSE HANDLING --------
+            if not response or not response.strip():
+                return "I'm unable to generate a resposne at the moment."
+            return response
+        except Exception as e:
+            # -------- FAIL-SAFE RESPONSE --------
+            return "I'm experiencing technical difficulties. Please try again shortly."
 
     def generate_stream(self, task: TaskType, query: str, context: str = ""):
         """
@@ -29,4 +36,10 @@ class LLMService:
 
         prompt = build_prompt(task=task, query=query, context=context)
 
-        return self.client.generate_stream(model=model, prompt=prompt)
+        try:
+            for token in self.client.generate_stream(model=model, prompt=prompt):
+                yield token
+
+        except Exception:
+            # -------- STREAM FAIL-SAFE --------
+            yield "I'm experiencing technical difficulties. Please try again later."
