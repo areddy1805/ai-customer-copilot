@@ -10,8 +10,10 @@ from app.tools.refund_tool import RefundTool
 from app.tools.ticket_tool import TicketTool
 from app.guard.policy_guard import PolicyGuard
 from app.human.escalation_service import EscalationService
+from app.core.logger import Logger
 
 import re
+import time
 
 
 class Orchestrator:
@@ -26,24 +28,58 @@ class Orchestrator:
         self.ticket_tool = TicketTool()
         self.guard = PolicyGuard()
         self.escalation = EscalationService()
+        self.logger = Logger()
 
     def run(self, user_query: str, session_id: str) -> ConversationState:
-
+        start_time = time.time()
         state = ConversationState(user_query=user_query)
+        intent = None
 
         try:
             # -------- GUARD --------
             guard_result = self.guard.evaluate(user_query, intent="unknown")
 
             if not guard_result["allowed"]:
-
                 state.final_response = "Your request cannot be processed due to security or validation constraints."
                 state.metadata["execution"] = "blocked"
-                state.metadata["guard_reason"] = guard_result["reason"]
 
                 self.memory.add_message(session_id, "user", user_query)
                 self.memory.add_message(session_id, "assistant", state.final_response)
 
+                self._log(
+                    session_id, user_query, None, None, "blocked", start_time, "blocked"
+                )
+                return state
+
+            # -------- HUMAN ESCALATION (EARLY OVERRIDE) --------
+            if any(
+                p in user_query.lower()
+                for p in [
+                    "talk to human",
+                    "connect me to agent",
+                    "customer support",
+                    "human support",
+                ]
+            ):
+                self._escalate(
+                    session_id, user_query, "human_request", "User requested human"
+                )
+
+                state.final_response = "Connecting you to a support agent."
+                state.metadata["execution"] = "human_escalation"
+
+                self.memory.add_message(session_id, "user", user_query)
+                self.memory.add_message(session_id, "assistant", state.final_response)
+
+                self._log(
+                    session_id,
+                    user_query,
+                    "human_request",
+                    None,
+                    "human_escalation",
+                    start_time,
+                    "escalated",
+                )
                 return state
 
             # -------- LOAD MEMORY --------
@@ -54,50 +90,28 @@ class Orchestrator:
             intent = self.classifier.classify(user_query)
             state.intent = intent
 
+            # -------- GUARD (SECOND PASS) --------
             guard_result = self.guard.evaluate(user_query, intent=intent)
 
             # -------- FALLBACK --------
             if guard_result["action"] == "fallback":
                 response = self.rag.generate(user_query)
+
                 state.final_response = response
                 state.metadata["execution"] = "rag"
-                state.metadata["guard_reason"] = guard_result["reason"]
 
                 self.memory.add_message(session_id, "user", user_query)
-                self.memory.add_message(session_id, "assistant", state.final_response)
+                self.memory.add_message(session_id, "assistant", response)
 
-                return state
-
-            # -------- HUMAN ESCALATION --------
-
-            if any(
-                phrase in user_query.lower()
-                for phrase in [
-                    "talk to human",
-                    "connect me to agent",
-                    "customer support",
-                    "human support",
-                ]
-            ):
-                self._escalate(
-                    session_id=session_id,
-                    user_query=user_query,
-                    intent="human_request",
-                    reason="User requested human",
+                self._log(
+                    session_id, user_query, intent, None, "rag", start_time, "success"
                 )
-
-                state.final_response = "Connecting you to a support agent."
-
-                self.memory.add_message(session_id, "user", user_query)
-                self.memory.add_message(session_id, "assistant", state.final_response)
-
                 return state
 
-            # -------- ROUTE (COARSE) --------
+            # -------- ROUTE --------
             route = self.router.route(intent)
             state.metadata["route"] = route
 
-            # -------- BUILD QUERY --------
             query = f"""
                     Conversation History:
                     {history_text}
@@ -108,124 +122,121 @@ class Orchestrator:
 
             # -------- DIRECT LLM --------
             if route == "direct_llm":
-                response = self.llm.generate(task=TaskType.GENERAL, query=query)
+                response = self.llm.generate(TaskType.GENERAL, query)
                 state.final_response = response
                 state.metadata["execution"] = "direct_llm"
 
-            # -------- RAG (EXPLICIT) --------
+            # -------- RAG --------
             elif route == "rag":
                 response = self.rag.generate(user_query)
                 state.final_response = response
                 state.metadata["execution"] = "rag"
 
-            # -------- TOOL (HYBRID LOGIC) --------
+            # -------- TOOL --------
             elif route == "tool":
-
                 order_id = self._extract_order_id(user_query)
-
-                # -------- TOOL EXECUTION --------
                 tool_response = None
 
-                # ORDER STATUS
                 if intent == "order_status":
                     if not order_id:
-                        response = self.llm.generate(
-                            task=TaskType.GENERAL,
-                            query="Please provide a valid order ID.",
-                        )
-                        state.final_response = response
+                        state.final_response = "Please provide a valid order ID."
                         state.metadata["execution"] = "direct_llm"
+                        self._log(
+                            session_id,
+                            user_query,
+                            intent,
+                            route,
+                            "direct_llm",
+                            start_time,
+                            "success",
+                        )
                         return state
 
                     tool_response = self.order_tool.get_order_status(
                         {"order_id": order_id}
                     )
 
-                # REFUND
                 elif intent == "refund_request":
                     tool_response = self.refund_tool.process_refund(
                         {"order_id": order_id}
                     )
 
-                # DELIVERY / SUPPORT
                 elif intent in ["delivery_issue", "account_update"]:
                     tool_response = self.ticket_tool.create_ticket(
                         {"user_id": "USR1", "order_id": order_id, "issue": intent}
                     )
 
-                # -------- FORMAT TOOL RESPONSE --------
                 if tool_response and tool_response.success:
                     response = self.llm.generate(
-                        task=TaskType.TOOL_RESPONSE,
-                        query=user_query,
-                        context=self._format_tool_data(tool_response.data),
+                        TaskType.TOOL_RESPONSE,
+                        user_query,
+                        self._format_tool_data(tool_response.data),
                     )
+                    state.final_response = response
+                    state.metadata["execution"] = "tool"
+
                 else:
-                    # -------- ESCALATE --------
-                    self._escalate(
-                        session_id=session_id,
-                        user_query=user_query,
-                        intent=intent,
-                        reason="Tool failure",
+                    self._escalate(session_id, user_query, intent, "Tool failure")
+                    state.final_response = (
+                        "Your request has been escalated to a support agent."
                     )
-
-                    response = "Your request has been escalated to a support agent."
-
-                state.final_response = response
-                state.metadata["execution"] = "tool"
+                    state.metadata["execution"] = "escalated"
 
             else:
-                self._escalate(
-                    session_id=session_id,
-                    user_query=user_query,
-                    intent=intent,
-                    reason="Unhandled case",
-                )
-
+                self._escalate(session_id, user_query, intent, "Unhandled case")
                 state.final_response = "Your request has been escalated to support."
+                state.metadata["execution"] = "escalated"
 
             # -------- SAVE MEMORY --------
             self.memory.add_message(session_id, "user", user_query)
             self.memory.add_message(session_id, "assistant", state.final_response)
 
+            self._log(
+                session_id,
+                user_query,
+                intent,
+                state.metadata.get("route"),
+                state.metadata.get("execution"),
+                start_time,
+                "success",
+            )
+
             return state
 
         except Exception as e:
-
-            # -------- FAIL-SAFE ESCALATION --------
             try:
-                self._escalate(
-                    session_id=session_id,
-                    user_query=user_query,
-                    intent=state.intent or "unknown",
-                    reason=f"System failure: {str(e)}",
-                )
+                self._escalate(session_id, user_query, intent or "unknown", str(e))
             except:
-                pass  # even escalation should not crash
+                pass
 
             state.final_response = (
                 "Something went wrong. Your request has been escalated."
             )
             state.metadata["execution"] = "system_failure"
 
+            self._log(
+                session_id,
+                user_query,
+                intent,
+                None,
+                "system_failure",
+                start_time,
+                "failure",
+            )
             return state
 
     def run_stream(self, user_query: str, session_id: str):
-
-        state = ConversationState(user_query=user_query)
-
         try:
-            # -------- GUARD (FIRST PASS) --------
-            guard_result = self.guard.evaluate(user_query, intent="unknown")
+            guard = self.guard.evaluate(user_query, "unknown")
 
-            if not guard_result["allowed"]:
+            if not guard["allowed"]:
                 yield "Your request cannot be processed due to security or validation constraints."
                 return
 
             # -------- HUMAN ESCALATION --------
             if any(
-                phrase in user_query.lower()
-                for phrase in [
+                p in user_query.lower()
+                for p in [
                     "talk to human",
                     "connect me to agent",
                     "customer support",
@@ -233,133 +244,102 @@ class Orchestrator:
                 ]
             ):
                 self._escalate(
-                    session_id=session_id,
-                    user_query=user_query,
-                    intent="human_request",
-                    reason="User requested human",
+                    session_id, user_query, "human_request", "User requested human"
                 )
-
                 yield "Connecting you to a support agent."
                 return
 
-            # -------- CLASSIFY --------
             intent = self.classifier.classify(user_query)
-            state.intent = intent
 
-            # -------- GUARD (SECOND PASS) --------
-            guard_result = self.guard.evaluate(user_query, intent=intent)
+            guard = self.guard.evaluate(user_query, intent)
 
-            if guard_result["action"] == "fallback":
-                # RAG streaming
-                for token in self.llm.generate_stream(
-                    task=TaskType.RAG, query=user_query
-                ):
-                    yield token
+            if guard["action"] == "fallback":
+                for t in self.llm.generate_stream(TaskType.RAG, user_query):
+                    yield t
                 return
 
-            # -------- ROUTE --------
             route = self.router.route(intent)
 
-            # -------- DIRECT LLM --------
             if route == "direct_llm":
-                for token in self.llm.generate_stream(
-                    task=TaskType.GENERAL, query=user_query
-                ):
-                    yield token
+                for t in self.llm.generate_stream(TaskType.GENERAL, user_query):
+                    yield t
                 return
 
-            # -------- TOOL --------
             elif route == "tool":
-
                 order_id = self._extract_order_id(user_query)
 
-                tool_response = None
+                if intent == "order_status" and not order_id:
+                    yield "Please provide a valid order ID."
+                    return
 
                 if intent == "order_status":
-                    if not order_id:
-                        yield "Please provide a valid order ID."
-                        return
-
-                    tool_response = self.order_tool.get_order_status(
-                        {"order_id": order_id}
-                    )
-
+                    res = self.order_tool.get_order_status({"order_id": order_id})
                 elif intent == "refund_request":
-                    tool_response = self.refund_tool.process_refund(
-                        {"order_id": order_id}
-                    )
-
-                elif intent in ["delivery_issue", "account_update"]:
-                    tool_response = self.ticket_tool.create_ticket(
+                    res = self.refund_tool.process_refund({"order_id": order_id})
+                else:
+                    res = self.ticket_tool.create_ticket(
                         {"user_id": "USR1", "order_id": order_id, "issue": intent}
                     )
 
-                # -------- STREAM FORMATTED RESPONSE --------
-                if tool_response and tool_response.success:
-                    context = self._format_tool_data(tool_response.data)
-                else:
-                    self._escalate(
-                        session_id=session_id,
-                        user_query=user_query,
-                        intent=intent,
-                        reason="Tool failure",
-                    )
-
+                if not res or not res.success:
+                    self._escalate(session_id, user_query, intent, "Tool failure")
                     yield "Your request has been escalated to a support agent."
                     return
 
-                for token in self.llm.generate_stream(
-                    task=TaskType.TOOL_RESPONSE, query=user_query, context=context
-                ):
-                    yield token
+                context = self._format_tool_data(res.data)
 
+                for t in self.llm.generate_stream(
+                    TaskType.TOOL_RESPONSE, user_query, context
+                ):
+                    yield t
                 return
 
-            # -------- RAG --------
             elif route == "rag":
-                for token in self.llm.generate_stream(
-                    task=TaskType.RAG, query=user_query
-                ):
-                    yield token
+                for t in self.llm.generate_stream(TaskType.RAG, user_query):
+                    yield t
                 return
 
-            else:
-                yield "Something went wrong."
+            yield "Something went wrong."
 
-        except Exception as e:
-
-            try:
-                self._escalate(
-                    session_id=session_id,
-                    user_query=user_query,
-                    intent="unknown",
-                    reason=f"System failure: {str(e)}",
-                )
-            except:
-                pass
-
+        except Exception:
             yield "Something went wrong. Your request has been escalated."
 
     # -------- HELPERS --------
 
-    def _format_history(self, history):
-        lines = []
-        for msg in history:
-            role = msg["role"].capitalize()
-            lines.append(f"{role}: {msg['content']}")
-        return "\n".join(lines)
+    def _log(self, session_id, query, intent, route, execution, start_time, status):
+        try:
+            latency = int((time.time() - start_time) * 1000)
+
+            status = "success"
+            if execution in ["escalated", "system_failure"]:
+                status = "failure"
+
+            self.logger.log_request(
+                session_id=session_id,
+                user_query=query,
+                intent=intent,
+                route=route,
+                execution=execution,
+                latency_ms=latency,
+                status=status,
+            )
+        except:
+            pass
 
     def _extract_order_id(self, query: str):
         match = re.search(r"ORD\d+", query.upper())
         return match.group(0) if match else None
 
+    def _format_history(self, history):
+        return "\n".join(f"{m['role'].capitalize()}: {m['content']}" for m in history)
+
     def _format_tool_data(self, data: dict) -> str:
-        lines = []
-        for k, v in data.items():
-            lines.append(f"{k}: {v}")
-        return "\n".join(lines)
+        return "\n".join(f"{k}: {v}" for k, v in data.items())
 
     def _escalate(self, session_id, user_query, intent, reason):
         self.escalation.push(
-            session_id=session_id, user_query=user_query, intent=intent, reason=reason
+            session_id=session_id,
+            user_query=user_query,
+            intent=intent,
+            reason=reason,
         )

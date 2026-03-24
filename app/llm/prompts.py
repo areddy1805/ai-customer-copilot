@@ -69,16 +69,12 @@ def build_prompt(task: TaskType, query: str, context: str = "") -> str:
                 You are given structured tool output. Your job is to convert it into a clear, user-friendly response.
 
                 STRICT RULES:
-                - DO NOT change any numbers, dates, IDs, or values
-                - DO NOT reformat dates
-                - DO NOT add extra information
-                - ONLY use the exact values provided
-                - If error → explain clearly and politely
-                - Keep response concise
-                - ONLY use information present in Tool Output
-                - DO NOT add suggestions, tips, or extra sentences
-                - DO NOT infer anything not explicitly provided
-                - Keep response minimal and factual
+                - Use ONLY the information present in Tool Output
+                - DO NOT add, infer, or assume any information
+                - DO NOT modify, reformat, or reinterpret any values (IDs, dates, amounts)
+                - DO NOT include explanations, suggestions, or extra sentences
+                - Output must be a direct, minimal natural-language rendering of the Tool Output
+                - Maximum 2 sentences
 
                 User Query:
                 {query}
