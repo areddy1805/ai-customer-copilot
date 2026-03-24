@@ -26,18 +26,24 @@ class Logger:
         execution: str,
         latency_ms: int,
         status: str,
+        extra: dict = None,
     ):
+        data = {
+            "session_id": session_id,
+            "query": user_query,
+            "intent": intent,
+            "route": route,
+            "execution": execution,
+            "latency_ms": latency_ms,
+            "status": status,
+        }
+
+        if extra:
+            data.update(extra)
+
         self.log(
             event="request_complete",
-            data={
-                "session_id": session_id,
-                "query": user_query,
-                "intent": intent,
-                "route": route,
-                "execution": execution,
-                "latency_ms": latency_ms,
-                "status": status,
-            },
+            data=data,
         )
 
     def log_error(self, session_id: str, error: str):

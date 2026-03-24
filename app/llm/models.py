@@ -10,7 +10,6 @@ class TaskType(str, Enum):
 
 
 MODEL_MAPPING = {
-    TaskType.CLASSIFICATION: "phi3:mini",
     TaskType.GENERAL: "llama3.2:3b",
     TaskType.RAG: "mistral:7b-instruct",
     TaskType.STRUCTURED: "qwen2.5:3b",

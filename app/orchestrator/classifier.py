@@ -12,19 +12,32 @@ VALID_INTENTS = {
 
 
 class IntentClassifier:
-    def __init__(self):
-        self.llm = LLMService()
+    """
+    Deterministic intent classifier
+    """
 
     def classify(self, query: str) -> str:
-        """
-        Classifies user query into predefined intent categories
-        """
+        q = query.lower()
 
-        response = self.llm.generate(task=TaskType.CLASSIFICATION, query=query)
+        # -------- ORDER STATUS --------
+        if "order" in q and any(x in q for x in ["where", "status", "track"]):
+            return "order_status"
 
-        intent = response.strip().lower()
+        # -------- REFUND --------
+        if "refund" in q or "money back" in q:
+            return "refund_request"
 
-        if intent not in VALID_INTENTS:
-            return "general"
+        # -------- CANCELLATION --------
+        if "cancel" in q:
+            return "cancellation"
 
-        return intent
+        # -------- DELIVERY --------
+        if any(x in q for x in ["delayed", "late", "not delivered", "delay"]):
+            return "delivery_issue"
+
+        # -------- ACCOUNT --------
+        if any(x in q for x in ["account", "address", "update profile"]):
+            return "account_update"
+
+        # -------- DEFAULT --------
+        return "general"

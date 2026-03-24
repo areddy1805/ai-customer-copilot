@@ -23,7 +23,6 @@ class RefundTool:
         Process refund using real data relationships:
         orders + payments + refunds
         """
-
         try:
             validated = RefundRequestInput(**input_data)
 
@@ -38,23 +37,29 @@ class RefundTool:
             if not order:
                 return ToolResponse(success=False, error="Order not found")
 
-            # Check delivery status
-            if order["status"] != "delivered":
-                return ToolResponse(
-                    success=False, error="Refund not allowed: Order not delivered"
-                )
-
-            # Check if refund already exists
+            # -------- EXISTING REFUND (FIX) --------
             existing_refund = next(
                 (r for r in refunds if r["order_id"] == validated.order_id), None
             )
 
             if existing_refund:
                 return ToolResponse(
-                    success=False, error=f"Refund already {existing_refund['status']}"
+                    success=True,
+                    data={
+                        "order_id": validated.order_id,
+                        "status": existing_refund["status"],
+                        "amount": existing_refund["amount"],
+                        "mode": existing_refund["mode"],
+                    },
                 )
 
-            # Get payment info
+            # -------- VALIDATION --------
+            if order["status"] != "delivered":
+                return ToolResponse(
+                    success=False,
+                    error="Refund not allowed: Order not delivered",
+                )
+
             payment = next(
                 (p for p in payments if p["order_id"] == validated.order_id), None
             )
@@ -62,19 +67,17 @@ class RefundTool:
             if not payment:
                 return ToolResponse(success=False, error="Payment record not found")
 
-            # Decide refund mode
-            if payment["method"] == "prepaid":
-                refund_mode = "original_method"
-            else:
-                refund_mode = "wallet"
+            # -------- REFUND MODE --------
+            refund_mode = (
+                "original_method" if payment["method"] == "prepaid" else "wallet"
+            )
 
-            # 8. Simulate refund creation
+            # -------- CREATE REFUND --------
             refund_data = {
                 "order_id": validated.order_id,
-                "refund_status": "initiated",
+                "status": "initiated",
                 "amount": order["amount"],
                 "mode": refund_mode,
-                "message": "Refund will be processed within 5-7 business days",
             }
 
             return ToolResponse(success=True, data=refund_data)

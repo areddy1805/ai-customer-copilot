@@ -21,25 +21,6 @@ def build_prompt(task: TaskType, query: str, context: str = "") -> str:
                 Answer:
                 """.strip()
 
-    elif task == TaskType.CLASSIFICATION:
-        return f"""
-                Classify the following user query into one of these categories:
-
-                - order_status
-                - refund_request
-                - cancellation
-                - delivery_issue
-                - account_update
-                - general
-
-                Return ONLY the category name.
-
-                Query:
-                {query}
-
-                Category:
-                """.strip()
-
     elif task == TaskType.RAG:
         return f"""
                 You are a customer support assistant for an e-commerce company.
