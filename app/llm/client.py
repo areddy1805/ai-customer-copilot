@@ -62,17 +62,22 @@ class OllamaClient:
                     raise Exception(f"Ollama error: {response.text}")
 
                 for line in response.iter_lines():
-                    if line:
+                    if not line:
+                        continue
+
+                    try:
                         data = json.loads(line.decode("utf-8"))
+                    except json.JSONDecodeError:
+                        continue
 
-                        # Extract only the token text
-                        token = data.get("response", "")
-                        if token:
-                            yield token
+                    # Extract only the token text
+                    token = data.get("response", "")
+                    if token:
+                        yield token
 
-                        # Stop when done
-                        if data.get("done"):
-                            break
+                    # Stop when done
+                    if data.get("done"):
+                        break
 
         except requests.exceptions.Timeout:
             raise Exception("LLM stream timed out")

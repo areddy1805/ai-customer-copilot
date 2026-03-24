@@ -149,6 +149,85 @@ class Orchestrator:
 
         return state
 
+    def run_stream(self, user_query: str, session_id: str):
+
+        state = ConversationState(user_query=user_query)
+
+        # -------- GUARD (FIRST PASS) --------
+        guard_result = self.guard.evaluate(user_query, intent="unknown")
+
+        if not guard_result["allowed"]:
+            yield "Your request cannot be processed due to security or validation constraints."
+            return
+
+        # -------- CLASSIFY --------
+        intent = self.classifier.classify(user_query)
+        state.intent = intent
+
+        # -------- GUARD (SECOND PASS) --------
+        guard_result = self.guard.evaluate(user_query, intent=intent)
+
+        if guard_result["action"] == "fallback":
+            # RAG streaming
+            for token in self.llm.generate_stream(task=TaskType.RAG, query=user_query):
+                yield token
+            return
+
+        # -------- ROUTE --------
+        route = self.router.route(intent)
+
+        # -------- DIRECT LLM --------
+        if route == "direct_llm":
+            for token in self.llm.generate_stream(
+                task=TaskType.GENERAL, query=user_query
+            ):
+                yield token
+            return
+
+        # -------- TOOL --------
+        elif route == "tool":
+
+            order_id = self._extract_order_id(user_query)
+
+            tool_response = None
+
+            if intent == "order_status":
+                if not order_id:
+                    yield "Please provide a valid order ID."
+                    return
+
+                tool_response = self.order_tool.get_order_status({"order_id": order_id})
+
+            elif intent == "refund_request":
+                tool_response = self.refund_tool.process_refund({"order_id": order_id})
+
+            elif intent in ["delivery_issue", "account_update"]:
+                tool_response = self.ticket_tool.create_ticket(
+                    {"user_id": "USR1", "order_id": order_id, "issue": intent}
+                )
+
+            # -------- STREAM FORMATTED RESPONSE --------
+            if tool_response and tool_response.success:
+                context = self._format_tool_data(tool_response.data)
+            else:
+                context = f"Error: {tool_response.error if tool_response else 'Unknown error'}"
+
+            for token in self.llm.generate_stream(
+                task=TaskType.TOOL_RESPONSE, query=user_query, context=context
+            ):
+                yield token
+
+            return
+
+        # -------- RAG --------
+        elif route == "rag":
+            for token in self.llm.generate_stream(task=TaskType.RAG, query=user_query):
+                yield token
+            return
+
+        else:
+            yield "Something went wrong."
+
     # -------- HELPERS --------
 
     def _format_history(self, history):
