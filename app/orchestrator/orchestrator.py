@@ -9,6 +9,7 @@ from app.tools.order_tool import OrderTool
 from app.tools.refund_tool import RefundTool
 from app.tools.ticket_tool import TicketTool
 from app.guard.policy_guard import PolicyGuard
+from app.human.escalation_service import EscalationService
 
 import re
 
@@ -20,11 +21,11 @@ class Orchestrator:
         self.llm = LLMService()
         self.memory = MemoryService()
         self.rag = RAGService()
-
         self.order_tool = OrderTool()
         self.refund_tool = RefundTool()
         self.ticket_tool = TicketTool()
         self.guard = PolicyGuard()
+        self.escalation = EscalationService()
 
     def run(self, user_query: str, session_id: str) -> ConversationState:
 
@@ -60,6 +61,31 @@ class Orchestrator:
             state.final_response = response
             state.metadata["execution"] = "rag"
             state.metadata["guard_reason"] = guard_result["reason"]
+
+            self.memory.add_message(session_id, "user", user_query)
+            self.memory.add_message(session_id, "assistant", state.final_response)
+
+            return state
+
+        # -------- HUMAN ESCALATION --------
+
+        if any(
+            phrase in user_query.lower()
+            for phrase in [
+                "talk to human",
+                "connect me to agent",
+                "customer support",
+                "human support",
+            ]
+        ):
+            self._escalate(
+                session_id=session_id,
+                user_query=user_query,
+                intent="human_request",
+                reason="User requested human",
+            )
+
+            state.final_response = "Connecting you to a support agent."
 
             self.memory.add_message(session_id, "user", user_query)
             self.memory.add_message(session_id, "assistant", state.final_response)
@@ -129,19 +155,28 @@ class Orchestrator:
                     context=self._format_tool_data(tool_response.data),
                 )
             else:
-                error_msg = tool_response.error if tool_response else "Unknown error"
-                response = self.llm.generate(
-                    task=TaskType.TOOL_RESPONSE,
-                    query=user_query,
-                    context=f"Error: {error_msg}",
+                # -------- ESCALATE --------
+                self._escalate(
+                    session_id=session_id,
+                    user_query=user_query,
+                    intent=intent,
+                    reason="Tool failure",
                 )
+
+                response = "Your request has been escalated to a support agent."
 
             state.final_response = response
             state.metadata["execution"] = "tool"
 
         else:
-            state.final_response = "Sorry, something went wrong."
-            state.metadata["execution"] = "error"
+            self._escalate(
+                session_id=session_id,
+                user_query=user_query,
+                intent=intent,
+                reason="Unhandled case",
+            )
+
+            state.final_response = "Your request has been escalated to support."
 
         # -------- SAVE MEMORY --------
         self.memory.add_message(session_id, "user", user_query)
@@ -158,6 +193,26 @@ class Orchestrator:
 
         if not guard_result["allowed"]:
             yield "Your request cannot be processed due to security or validation constraints."
+            return
+
+        # -------- HUMAN ESCALATION --------
+        if any(
+            phrase in user_query.lower()
+            for phrase in [
+                "talk to human",
+                "connect me to agent",
+                "customer support",
+                "human support",
+            ]
+        ):
+            self._escalate(
+                session_id=session_id,
+                user_query=user_query,
+                intent="human_request",
+                reason="User requested human",
+            )
+
+            yield "Connecting you to a support agent."
             return
 
         # -------- CLASSIFY --------
@@ -210,7 +265,15 @@ class Orchestrator:
             if tool_response and tool_response.success:
                 context = self._format_tool_data(tool_response.data)
             else:
-                context = f"Error: {tool_response.error if tool_response else 'Unknown error'}"
+                self._escalate(
+                    session_id=session_id,
+                    user_query=user_query,
+                    intent=intent,
+                    reason="Tool failure",
+                )
+
+                yield "Your request has been escalated to a support agent."
+                return
 
             for token in self.llm.generate_stream(
                 task=TaskType.TOOL_RESPONSE, query=user_query, context=context
@@ -246,3 +309,8 @@ class Orchestrator:
         for k, v in data.items():
             lines.append(f"{k}: {v}")
         return "\n".join(lines)
+
+    def _escalate(self, session_id, user_query, intent, reason):
+        self.escalation.push(
+            session_id=session_id, user_query=user_query, intent=intent, reason=reason
+        )
