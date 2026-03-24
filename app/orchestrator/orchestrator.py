@@ -12,6 +12,11 @@ from app.guard.policy_guard import PolicyGuard
 from app.human.escalation_service import EscalationService
 from app.core.logger import Logger
 from app.cache.response_cache import ResponseCache
+from app.security.rate_limiter import RateLimiter
+from app.cache.inflight_registry import InFlightRegistry
+from app.security.concurrency_limiter import ConcurrencyLimiter
+from app.security.circuit_breaker import CircuitBreaker
+from app.utils.retry import retry
 
 import re
 import time
@@ -30,25 +35,51 @@ class Orchestrator:
         self.guard = PolicyGuard()
         self.escalation = EscalationService()
         self.logger = Logger()
-        self.cache = ResponseCache()
 
+        self.cache = ResponseCache()
+        self.rate_limiter = RateLimiter()
+        self.inflight = InFlightRegistry()
+        self.concurrent = ConcurrencyLimiter(max_concurrent=5)
+
+        self.llm_cb = CircuitBreaker()
+        self.rag_cb = CircuitBreaker()
+
+        self.llm_cb_stream = CircuitBreaker()
+        self.rag_cb_stream = CircuitBreaker()
+
+    # ================= RUN =================
     def run(self, user_query: str, session_id: str) -> ConversationState:
         start_time = time.time()
         state = ConversationState(user_query=user_query)
+
         intent = None
         route = None
+        key = None
+        acquired = False
 
         try:
+            # -------- RATE LIMIT --------
+            if not self.rate_limiter.allow(session_id):
+                state.final_response = "Too many requests. Please try again later."
+                state.metadata["execution"] = "rate_limited"
+                self._log(
+                    session_id,
+                    user_query,
+                    intent,
+                    route,
+                    "rate_limited",
+                    start_time,
+                    state.metadata,
+                )
+                return state
+
             # -------- GUARD --------
             guard = self.guard.evaluate(user_query, "unknown")
-
             if not guard["allowed"]:
                 state.final_response = "Your request cannot be processed due to security or validation constraints."
                 state.metadata["execution"] = "blocked"
-
                 self.memory.add_message(session_id, "user", user_query)
                 self.memory.add_message(session_id, "assistant", state.final_response)
-
                 self._log(
                     session_id,
                     user_query,
@@ -60,7 +91,7 @@ class Orchestrator:
                 )
                 return state
 
-            # -------- HUMAN ESCALATION --------
+            # -------- HUMAN --------
             if any(
                 p in user_query.lower()
                 for p in [
@@ -73,13 +104,10 @@ class Orchestrator:
                 self._escalate(
                     session_id, user_query, "human_request", "User requested human"
                 )
-
                 state.final_response = "Connecting you to a support agent."
                 state.metadata["execution"] = "human_escalation"
-
                 self.memory.add_message(session_id, "user", user_query)
                 self.memory.add_message(session_id, "assistant", state.final_response)
-
                 self._log(
                     session_id,
                     user_query,
@@ -91,202 +119,292 @@ class Orchestrator:
                 )
                 return state
 
-            # -------- CLASSIFICATION --------
-            t0 = time.time()
+            # -------- CLASSIFY --------
             intent = self.classifier.classify(user_query)
-            t1 = time.time()
-
             state.intent = intent
-            state.metadata["latency_classification_ms"] = int((t1 - t0) * 1000)
 
-            # -------- CACHE (GLOBAL FOR NON-TOOL) --------
-            cached = self.cache.get(user_query)
-            if cached:
-                state.final_response = cached
-                state.metadata["execution"] = "cache"
+            key = f"{session_id}:{self._normalize(user_query)}"
 
-                self._log(
-                    session_id,
-                    user_query,
-                    intent,
-                    None,
-                    "cache",
-                    start_time,
-                    state.metadata,
-                )
-                return state
-
-            # -------- GUARD (SECOND PASS) --------
-            guard = self.guard.evaluate(user_query, intent)
-
-            if guard["action"] == "fallback":
-                t0 = time.time()
-                response = self.rag.generate(user_query)
-                t1 = time.time()
-
-                state.metadata["latency_rag_ms"] = int((t1 - t0) * 1000)
-                state.metadata["execution"] = "rag"
-                state.final_response = response
-
-                self.cache.set(user_query, response)
-
-                self.memory.add_message(session_id, "user", user_query)
-                self.memory.add_message(session_id, "assistant", response)
-
-                self._log(
-                    session_id,
-                    user_query,
-                    intent,
-                    None,
-                    "rag",
-                    start_time,
-                    state.metadata,
-                )
+            # -------- DEDUP --------
+            if not self.inflight.set_if_absent(key):
+                existing = self.inflight.get(key)
+                if existing:
+                    state.final_response = existing
                 return state
 
             # -------- ROUTE --------
             route = self.router.route(intent)
             state.metadata["route"] = route
 
-            # -------- MEMORY --------
-            history = self.memory.get_messages(session_id)
-            history_text = self._format_history(history) if history else ""
+            cache_key = f"{intent}:{self._normalize(user_query)}"
 
-            query = f"""
-Conversation History:
-{history_text}
+            # -------- CACHE --------
+            if route != "tool":
+                cached = self.cache.get(cache_key)
+                if cached:
+                    self.inflight.set(key, cached)
+                    state.final_response = cached
+                    return state
 
-Current Query:
-{user_query}
-"""
+            # -------- GUARD 2 --------
+            guard = self.guard.evaluate(user_query, intent)
+
+            if guard["action"] == "fallback" or route == "rag":
+
+                if not self.rag_cb.allow():
+                    state.final_response = (
+                        "Service temporarily unavailable. Please try again later."
+                    )
+                    self.inflight.delete(key)
+                    return state
+
+                try:
+                    response = retry(lambda: self.rag.generate(user_query))
+                    self.rag_cb.record_success()
+                except Exception:
+                    self.rag_cb.record_failure()
+                    self.inflight.delete(key)
+                    raise
+
+                state.final_response = response
+                self.cache.set(cache_key, response)
+                self.inflight.set(key, response)
+                return state
+
+            # -------- CONCURRENCY --------
+            if route in ["rag", "direct_llm"]:
+                if not self.concurrent.acquire():
+                    state.final_response = "System is busy. Please try again shortly."
+                    self.inflight.delete(key)
+                    return state
+                acquired = True
 
             # -------- DIRECT LLM --------
             if route == "direct_llm":
-                t0 = time.time()
-                response = self.llm.generate(TaskType.GENERAL, query)
-                t1 = time.time()
 
-                state.metadata["latency_llm_ms"] = int((t1 - t0) * 1000)
-                state.metadata["execution"] = "direct_llm"
+                if not self.llm_cb.allow():
+                    state.final_response = (
+                        "Service temporarily unavailable. Please try again later."
+                    )
+                    self.inflight.delete(key)
+                    return state
+
+                try:
+                    response = retry(
+                        lambda: self.llm.generate(TaskType.GENERAL, user_query)
+                    )
+                    self.llm_cb.record_success()
+                except Exception:
+                    self.llm_cb.record_failure()
+                    self.inflight.delete(key)
+                    raise
+
                 state.final_response = response
-
-                self.cache.set(user_query, response)
-
-            # -------- RAG --------
-            elif route == "rag":
-                t0 = time.time()
-                response = self.rag.generate(user_query)
-                t1 = time.time()
-
-                state.metadata["latency_rag_ms"] = int((t1 - t0) * 1000)
-                state.metadata["execution"] = "rag"
-                state.final_response = response
-
-                self.cache.set(user_query, response)
+                self.cache.set(cache_key, response)
+                self.inflight.set(key, response)
 
             # -------- TOOL --------
             elif route == "tool":
-                order_id = self._extract_order_id(user_query)
-                tool_response = None
 
-                t0 = time.time()
+                order_id = self._extract_order_id(user_query)
 
                 if intent == "order_status":
-                    if not order_id:
-                        state.final_response = "Please provide a valid order ID."
-                        state.metadata["execution"] = "direct_llm"
-                        self._log(
-                            session_id,
-                            user_query,
-                            intent,
-                            route,
-                            "direct_llm",
-                            start_time,
-                            state.metadata,
-                        )
-                        return state
-
-                    tool_response = self.order_tool.get_order_status(
-                        {"order_id": order_id}
-                    )
-
+                    res = self.order_tool.get_order_status({"order_id": order_id})
                 elif intent == "refund_request":
-                    tool_response = self.refund_tool.process_refund(
-                        {"order_id": order_id}
-                    )
-
+                    res = self.refund_tool.process_refund({"order_id": order_id})
                 else:
-                    tool_response = self.ticket_tool.create_ticket(
+                    res = self.ticket_tool.create_ticket(
                         {"user_id": "USR1", "order_id": order_id, "issue": intent}
                     )
 
-                t1 = time.time()
-                state.metadata["latency_tool_ms"] = int((t1 - t0) * 1000)
-
-                if tool_response and tool_response.success:
-                    response = self._format_tool_response(tool_response.data, intent)
-
-                    state.metadata["execution"] = "tool"
-                    state.final_response = response
-
-                else:
+                if not res or not res.success:
                     self._escalate(session_id, user_query, intent, "Tool failure")
-                    state.metadata["execution"] = "escalated"
-                    state.final_response = (
-                        "Your request has been escalated to a support agent."
-                    )
+                    response = "Your request has been escalated to a support agent."
+                    state.final_response = response
+                    self.inflight.set(key, response)
+                    return state
 
-            else:
-                self._escalate(session_id, user_query, intent, "Unhandled case")
-                state.metadata["execution"] = "escalated"
-                state.final_response = "Your request has been escalated to support."
+                if intent == "order_status":
+                    response = f"Your order {res.data.get('order_id')} is {res.data.get('status')} and expected by {res.data.get('delivery_eta')}."
+                elif intent == "refund_request":
+                    response = f"Refund status for order {res.data.get('order_id')} is {res.data.get('status')}."
+                else:
+                    response = f"Ticket {res.data.get('ticket_id')} is currently {res.data.get('status')}."
 
-            # -------- SAVE MEMORY --------
+                state.final_response = response
+                self.inflight.set(key, response)
+
             self.memory.add_message(session_id, "user", user_query)
             self.memory.add_message(session_id, "assistant", state.final_response)
 
-            self._log(
-                session_id,
-                user_query,
-                intent,
-                state.metadata.get("route"),
-                state.metadata.get("execution"),
-                start_time,
-                state.metadata,
-            )
-
             return state
 
-        except Exception as e:
-            try:
-                self._escalate(session_id, user_query, intent or "unknown", str(e))
-            except:
-                pass
+        finally:
+            if acquired:
+                self.concurrent.release()
 
-            state.metadata["execution"] = "system_failure"
-            state.final_response = (
-                "Something went wrong. Your request has been escalated."
-            )
+    # ================= STREAM =================
+    def run_stream(self, user_query: str, session_id: str):
+        key = None
+        final_response = ""
+        acquired = False
 
-            self._log(
-                session_id,
-                user_query,
-                intent,
-                None,
-                "system_failure",
-                start_time,
-                state.metadata,
-            )
-            return state
+        try:
+            if not self.rate_limiter.allow(session_id):
+                yield "Too many requests. Please try again later."
+                return
 
-    # -------- LOGGER --------
+            guard = self.guard.evaluate(user_query, "unknown")
+            if not guard["allowed"]:
+                yield "Your request cannot be processed due to security or validation constraints."
+                return
+
+            intent = self.classifier.classify(user_query)
+
+            key = f"{session_id}:{self._normalize(user_query)}"
+
+            if not self.inflight.set_if_absent(key):
+                existing = self.inflight.get(key)
+                if existing:
+                    yield existing
+                return
+
+            route = self.router.route(intent)
+
+            cache_key = f"{intent}:{self._normalize(user_query)}"
+
+            if route != "tool":
+                cached = self.cache.get(cache_key)
+                if cached:
+                    self.inflight.set(key, cached)
+                    yield cached
+                    return
+
+            if route in ["rag", "direct_llm"]:
+                if not self.concurrent.acquire():
+                    self.inflight.delete(key)
+                    yield "System is busy. Please try again shortly."
+                    return
+                acquired = True
+
+            guard = self.guard.evaluate(user_query, intent)
+
+            # -------- RAG --------
+            if guard["action"] == "fallback" or route == "rag":
+
+                if not self.rag_cb_stream.allow():
+                    self.inflight.delete(key)
+                    yield "Service temporarily unavailable. Please try again later."
+                    return
+
+                try:
+                    tokens = retry(
+                        lambda: list(self.llm.generate_stream(TaskType.RAG, user_query))
+                    )
+                    for t in tokens:
+                        final_response += t
+                        yield t
+                    self.rag_cb_stream.record_success()
+                except Exception:
+                    self.rag_cb_stream.record_failure()
+                    self.inflight.delete(key)
+                    raise
+
+                self.inflight.set(key, final_response)
+                self.cache.set(cache_key, final_response)
+
+                self.memory.add_message(session_id, "user", user_query)
+                self.memory.add_message(session_id, "assistant", final_response)
+                return
+
+            # -------- DIRECT LLM --------
+            if route == "direct_llm":
+
+                if not self.llm_cb_stream.allow():
+                    self.inflight.delete(key)
+                    yield "Service temporarily unavailable. Please try again later."
+                    return
+
+                try:
+                    tokens = retry(
+                        lambda: list(
+                            self.llm.generate_stream(TaskType.GENERAL, user_query)
+                        )
+                    )
+                    for t in tokens:
+                        final_response += t
+                        yield t
+                    self.llm_cb_stream.record_success()
+                except Exception:
+                    self.llm_cb_stream.record_failure()
+                    self.inflight.delete(key)
+                    raise
+
+                self.inflight.set(key, final_response)
+                self.cache.set(cache_key, final_response)
+
+                self.memory.add_message(session_id, "user", user_query)
+                self.memory.add_message(session_id, "assistant", final_response)
+                return
+
+            # -------- TOOL --------
+            if route == "tool":
+
+                order_id = self._extract_order_id(user_query)
+
+                if intent == "order_status":
+                    res = self.order_tool.get_order_status({"order_id": order_id})
+                elif intent == "refund_request":
+                    res = self.refund_tool.process_refund({"order_id": order_id})
+                else:
+                    res = self.ticket_tool.create_ticket(
+                        {"user_id": "USR1", "order_id": order_id, "issue": intent}
+                    )
+
+                if not res or not res.success:
+                    self._escalate(session_id, user_query, intent, "Tool failure")
+                    final_response = (
+                        "Your request has been escalated to a support agent."
+                    )
+                    self.inflight.set(key, final_response)
+                    yield final_response
+                    return
+
+                if intent == "order_status":
+                    final_response = f"Your order {res.data.get('order_id')} is {res.data.get('status')} and expected by {res.data.get('delivery_eta')}."
+                elif intent == "refund_request":
+                    final_response = f"Refund status for order {res.data.get('order_id')} is {res.data.get('status')}."
+                else:
+                    final_response = f"Ticket {res.data.get('ticket_id')} is currently {res.data.get('status')}."
+
+                self.inflight.set(key, final_response)
+
+                self.memory.add_message(session_id, "user", user_query)
+                self.memory.add_message(session_id, "assistant", final_response)
+
+                yield final_response
+                return
+
+            self.inflight.delete(key)
+            yield "Something went wrong."
+
+        except Exception:
+            if key:
+                self.inflight.delete(key)
+            yield "Something went wrong. Your request has been escalated."
+
+        finally:
+            if acquired:
+                self.concurrent.release()
+
+    # ================= HELPERS =================
+
     def _log(self, session_id, query, intent, route, execution, start_time, metadata):
         try:
             latency = int((time.time() - start_time) * 1000)
-
-            status = "success"
-            if execution in ["escalated", "system_failure"]:
-                status = "failure"
+            status = (
+                "failure" if execution in ["escalated", "system_failure"] else "success"
+            )
 
             self.logger.log_request(
                 session_id=session_id,
@@ -301,26 +419,12 @@ Current Query:
         except:
             pass
 
-    # -------- HELPERS --------
     def _extract_order_id(self, query: str):
         match = re.search(r"ORD\d+", query.upper())
         return match.group(0) if match else None
 
     def _format_history(self, history):
         return "\n".join(f"{m['role'].capitalize()}: {m['content']}" for m in history)
-
-    def _format_tool_response(self, data: dict, intent: str) -> str:
-
-        if intent == "order_status":
-            return f"Your order {data.get('order_id')} is {data.get('status')} and expected by {data.get('delivery_eta')}."
-
-        if intent == "refund_request":
-            return f"Refund status for order {data.get('order_id')} is {data.get('status')}."
-
-        if intent in ["delivery_issue", "account_update"]:
-            return f"Ticket {data.get('ticket_id')} is currently {data.get('status')}."
-
-        return "Request processed successfully."
 
     def _escalate(self, session_id, user_query, intent, reason):
         self.escalation.push(
@@ -329,3 +433,6 @@ Current Query:
             intent=intent,
             reason=reason,
         )
+
+    def _normalize(self, query: str):
+        return query.strip().lower()
