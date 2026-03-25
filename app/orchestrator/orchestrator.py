@@ -17,6 +17,11 @@ from app.cache.inflight_registry import InFlightRegistry
 from app.security.concurrency_limiter import ConcurrencyLimiter
 from app.security.circuit_breaker import CircuitBreaker
 from app.utils.retry import retry
+from app.observability.metrics import Metrics
+from app.guard.response_validator import ResponseValidator
+from app.rag.embedder import Embedder
+from app.cache.semantic_cache import SemanticCache
+
 
 import re
 import time
@@ -47,8 +52,15 @@ class Orchestrator:
         self.llm_cb_stream = CircuitBreaker()
         self.rag_cb_stream = CircuitBreaker()
 
+        self.metrics = Metrics()
+        self.validator = ResponseValidator()
+
+        self.embedder = Embedder()
+        self.semantic_cache = SemanticCache(self.embedder)
+
     # ================= RUN =================
     def run(self, user_query: str, session_id: str) -> ConversationState:
+        self.metrics.inc("requests_total")
         start_time = time.time()
         state = ConversationState(user_query=user_query)
 
@@ -60,6 +72,7 @@ class Orchestrator:
         try:
             # -------- RATE LIMIT --------
             if not self.rate_limiter.allow(session_id):
+                self.metrics.inc("rate_limited")
                 state.final_response = "Too many requests. Please try again later."
                 state.metadata["execution"] = "rate_limited"
                 self._log(
@@ -140,11 +153,28 @@ class Orchestrator:
 
             # -------- CACHE --------
             if route != "tool":
-                cached = self.cache.get(cache_key)
+
+                # -------- SEMANTIC CACHE --------
+                cached = self.semantic_cache.get(user_query)
+
                 if cached:
+                    self.metrics.inc("semantic_cache_hits")
                     self.inflight.set(key, cached)
                     state.final_response = cached
                     return state
+                else:
+                    self.metrics.inc("semantic_cache_misses")
+
+                # -------- EXACT CACHE --------
+                cached = self.cache.get(cache_key)
+
+                if cached:
+                    self.metrics.inc("cache_hits")
+                    self.inflight.set(key, cached)
+                    state.final_response = cached
+                    return state
+                else:
+                    self.metrics.inc("cache_misses")
 
             # -------- GUARD 2 --------
             guard = self.guard.evaluate(user_query, intent)
@@ -152,6 +182,7 @@ class Orchestrator:
             if guard["action"] == "fallback" or route == "rag":
 
                 if not self.rag_cb.allow():
+                    self.metrics.inc("circuit_open")
                     state.final_response = (
                         "Service temporarily unavailable. Please try again later."
                     )
@@ -169,6 +200,14 @@ class Orchestrator:
                 state.final_response = response
                 self.cache.set(cache_key, response)
                 self.inflight.set(key, response)
+                if (
+                    response
+                    and len(response) > 20
+                    and "escalated" not in response.lower()
+                    and "something went wrong" not in response.lower()
+                ):
+                    self.semantic_cache.set(user_query, response)
+                self.metrics.inc("requests_success")
                 return state
 
             # -------- CONCURRENCY --------
@@ -183,6 +222,7 @@ class Orchestrator:
             if route == "direct_llm":
 
                 if not self.llm_cb.allow():
+                    self.metrics.inc("circuit_open")
                     state.final_response = (
                         "Service temporarily unavailable. Please try again later."
                     )
@@ -199,9 +239,21 @@ class Orchestrator:
                     self.inflight.delete(key)
                     raise
 
+                if not self.validator.validate(intent, response):
+                    response = "Unable to process your request accurately."
+                    self.metrics.inc("validation_failures")
+
                 state.final_response = response
                 self.cache.set(cache_key, response)
                 self.inflight.set(key, response)
+                if (
+                    response
+                    and len(response) > 20
+                    and "escalated" not in response.lower()
+                    and "something went wrong" not in response.lower()
+                ):
+                    self.semantic_cache.set(user_query, response)
+                self.metrics.inc("requests_success")
 
             # -------- TOOL --------
             elif route == "tool":
@@ -221,6 +273,9 @@ class Orchestrator:
                     self._escalate(session_id, user_query, intent, "Tool failure")
                     response = "Your request has been escalated to a support agent."
                     state.final_response = response
+                    state.metadata["execution"] = "escalated"
+                    self.metrics.inc("requests_failure")
+                    self.metrics.inc("requests_escalated")
                     self.inflight.set(key, response)
                     return state
 
@@ -231,11 +286,34 @@ class Orchestrator:
                 else:
                     response = f"Ticket {res.data.get('ticket_id')} is currently {res.data.get('status')}."
 
+                if not self.validator.validate(intent, response, res.data):
+                    self._escalate(
+                        session_id, user_query, intent, "Response validation failed"
+                    )
+
+                    response = "Your request has been escalated to a support agent."
+                    state.metadata["execution"] = "validation_failed"
+
+                    self.metrics.inc("requests_failure")
+                    self.metrics.inc("requests_escalated")
+
                 state.final_response = response
                 self.inflight.set(key, response)
+                if (
+                    response
+                    and len(response) > 20
+                    and "escalated" not in response.lower()
+                    and "something went wrong" not in response.lower()
+                ):
+                    self.semantic_cache.set(user_query, response)
+                self.metrics.inc("requests_success")
 
             self.memory.add_message(session_id, "user", user_query)
             self.memory.add_message(session_id, "assistant", state.final_response)
+
+            # -------- LATENCY --------
+            latency = int((time.time() - start_time) * 1000)
+            self.metrics.observe("total_latency", latency)
 
             return state
 
@@ -264,6 +342,7 @@ class Orchestrator:
             key = f"{session_id}:{self._normalize(user_query)}"
 
             if not self.inflight.set_if_absent(key):
+                self.metrics.inc("dedup_hits")
                 existing = self.inflight.get(key)
                 if existing:
                     yield existing
@@ -274,11 +353,26 @@ class Orchestrator:
             cache_key = f"{intent}:{self._normalize(user_query)}"
 
             if route != "tool":
-                cached = self.cache.get(cache_key)
+
+                # -------- SEMANTIC CACHE --------
+                cached = self.semantic_cache.get(user_query)
                 if cached:
+                    self.metrics.inc("semantic_cache_hits")
                     self.inflight.set(key, cached)
                     yield cached
                     return
+                else:
+                    self.metrics.inc("semantic_cache_misses")
+
+                # -------- EXACT CACHE --------
+                cached = self.cache.get(cache_key)
+                if cached:
+                    self.metrics.inc("cache_hits")
+                    self.inflight.set(key, cached)
+                    yield cached
+                    return
+                else:
+                    self.metrics.inc("cache_misses")
 
             if route in ["rag", "direct_llm"]:
                 if not self.concurrent.acquire():
@@ -293,6 +387,7 @@ class Orchestrator:
             if guard["action"] == "fallback" or route == "rag":
 
                 if not self.rag_cb_stream.allow():
+                    self.metrics.inc("circuit_open")
                     self.inflight.delete(key)
                     yield "Service temporarily unavailable. Please try again later."
                     return
@@ -313,6 +408,14 @@ class Orchestrator:
                 self.inflight.set(key, final_response)
                 self.cache.set(cache_key, final_response)
 
+                if (
+                    final_response
+                    and len(final_response) > 20
+                    and "escalated" not in final_response.lower()
+                    and "something went wrong" not in final_response.lower()
+                ):
+                    self.semantic_cache.set(user_query, final_response)
+
                 self.memory.add_message(session_id, "user", user_query)
                 self.memory.add_message(session_id, "assistant", final_response)
                 return
@@ -321,6 +424,7 @@ class Orchestrator:
             if route == "direct_llm":
 
                 if not self.llm_cb_stream.allow():
+                    self.metrics.inc("circuit_open")
                     self.inflight.delete(key)
                     yield "Service temporarily unavailable. Please try again later."
                     return
@@ -342,6 +446,14 @@ class Orchestrator:
 
                 self.inflight.set(key, final_response)
                 self.cache.set(cache_key, final_response)
+
+                if (
+                    final_response
+                    and len(final_response) > 20
+                    and "escalated" not in final_response.lower()
+                    and "something went wrong" not in final_response.lower()
+                ):
+                    self.semantic_cache.set(user_query, final_response)
 
                 self.memory.add_message(session_id, "user", user_query)
                 self.memory.add_message(session_id, "assistant", final_response)
@@ -366,6 +478,8 @@ class Orchestrator:
                     final_response = (
                         "Your request has been escalated to a support agent."
                     )
+                    self.metrics.inc("requests_failure")
+                    self.metrics.inc("requests_escalated")
                     self.inflight.set(key, final_response)
                     yield final_response
                     return
@@ -377,7 +491,30 @@ class Orchestrator:
                 else:
                     final_response = f"Ticket {res.data.get('ticket_id')} is currently {res.data.get('status')}."
 
+                if not self.validator.validate(intent, final_response, res.data):
+                    self._escalate(
+                        session_id, user_query, intent, "Response validation failed"
+                    )
+
+                    final_response = (
+                        "Your request has been escalated to a support agent."
+                    )
+
+                    self.inflight.set(key, final_response)
+                    self.metrics.inc("validation_failures")
+                    yield final_response
+                    return
+
+                self.metrics.inc("requests_success")
                 self.inflight.set(key, final_response)
+
+                if (
+                    final_response
+                    and len(final_response) > 20
+                    and "escalated" not in final_response.lower()
+                    and "something went wrong" not in final_response.lower()
+                ):
+                    self.semantic_cache.set(user_query, final_response)
 
                 self.memory.add_message(session_id, "user", user_query)
                 self.memory.add_message(session_id, "assistant", final_response)
