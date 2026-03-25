@@ -50,7 +50,6 @@ class Planner:
             return Plan(
                 [
                     Step("get_order", {"query": query}),
-                    Step("check_ticket", {}),
                     Step("create_or_fetch_ticket", {}),
                 ],
                 query=query,

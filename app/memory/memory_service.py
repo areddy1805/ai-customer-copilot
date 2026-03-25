@@ -41,3 +41,6 @@ class MemoryService:
         """
         key = self._get_key(session_id)
         self.redis.delete(key)
+
+    def get_history(self, session_id: str):
+        return self.get_messages(session_id)

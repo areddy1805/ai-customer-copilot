@@ -22,6 +22,7 @@ from app.guard.response_validator import ResponseValidator
 from app.rag.embedder import Embedder
 from app.cache.semantic_cache import SemanticCache
 from app.orchestrator.planner import Planner
+from app.orchestrator.plan import Plan, Step
 from app.orchestrator.executor import Executor
 from app.orchestrator.plan_validator import PlanValidator
 from app.orchestrator.decomposer import Decomposer
@@ -171,6 +172,13 @@ class Orchestrator:
 
             # -------- CLASSIFY --------
             intent = self.classifier.classify(user_query)
+
+            if "ticket" in user_query.lower():
+                intent = "create_ticket"
+
+            if any(p in user_query.lower() for p in ["refund policy", "refund rules"]):
+                intent = "refund_request"
+
             state.intent = intent
 
             key = f"{session_id}:{self._normalize(user_query)}"
@@ -183,14 +191,21 @@ class Orchestrator:
                 return state
 
             # -------- ROUTE --------
-            tool_match = self.tool_selector.select(user_query)
-
-            if tool_match and intent == "general":
+            if intent in [
+                "order_status",
+                "refund_request",
+                "delivery_issue",
+                "create_ticket",
+            ]:
                 route = "tool"
-                intent = tool_match
             else:
-                route = self.router.route(intent)
-            state.metadata["route"] = route
+                tool_match = self.tool_selector.select(user_query)
+
+                if tool_match:
+                    route = "tool"
+                    intent = tool_match
+                else:
+                    route = self.router.route(intent)
 
             cache_key = f"{intent}:{self._normalize(user_query)}"
 
@@ -222,7 +237,9 @@ class Orchestrator:
             # -------- GUARD 2 --------
             guard = self.guard.evaluate(user_query, intent)
 
-            if guard["action"] == "fallback" or route == "rag":
+            if (
+                guard["action"] == "fallback" or route == "rag"
+            ) and intent != "refund_request":
 
                 if not self.rag_cb.allow():
                     self.metrics.inc("circuit_open")
@@ -281,41 +298,97 @@ class Orchestrator:
 
                 memory_context = self._get_memory_context(session_id)
 
-                tasks = self.decomposer.decompose(user_query, memory_context)
+                if intent in ["order_status", "refund_request", "delivery_issue"]:
+                    tasks = [user_query]
+                else:
+                    tasks = self.decomposer.decompose(user_query, memory_context) or [
+                        user_query
+                    ]
 
                 final_result = None
 
+                last_intent = intent
+
                 for task in tasks:
 
-                    sub_intent = self.classifier.classify(task)
+                    # DO NOT reclassify core intents
+                    if intent in [
+                        "order_status",
+                        "refund_request",
+                        "delivery_issue",
+                        "create_ticket",
+                    ]:
+                        sub_intent = intent
+                    else:
+                        sub_intent = self.classifier.classify(task)
 
-                    plan = self._get_valid_plan(sub_intent, task, memory_context)
+                    last_intent = sub_intent
 
-                    state.metadata.setdefault("plans", []).append(
-                        [step.action for step in plan.steps]
-                    )
+                    plan = self._get_valid_plan(last_intent, task, memory_context)
+
+                    if "plans" not in state.metadata:
+                        state.metadata["plans"] = []
+
+                    state.metadata["plans"].append([step.action for step in plan.steps])
+
+                    # route override AFTER plan exists
+                    if plan.steps and plan.steps[0].action == "fallback_rag":
+                        state.metadata["route"] = "rag"
+
+                        response = self.rag.generate("refund policy")
+
+                        state.final_response = response
+                        self.inflight.set(key, response)
+
+                        self.memory.add_message(session_id, "user", user_query)
+                        self.memory.add_message(session_id, "assistant", response)
+
+                        self.metrics.inc("requests_success")
+                        return state
+                    else:
+                        state.metadata["route"] = route
 
                     result = self.executor.execute(plan)
 
-                    # -------- FAILURE → REPLAN --------
-                    if not result or (
-                        hasattr(result, "success") and not result.success
-                    ):
+                    # -------- EARLY SUCCESS EXIT (CRITICAL FIX--------
+                    if hasattr(result, "data") and last_intent == "order_status":
+                        data = getattr(result, "data", None)
 
+                        if not data:
+                            continue  # do NOT break on invalid data
+
+                        final_result = result
+                        break
+
+                    # -------- FAILURE → REPLAN --------
+                    if hasattr(result, "success") and not result.success:
+
+                        # -------- REFUND SPECIAL CASE (NO ESCALATION) --------
+                        if last_intent == "refund_request":
+                            state.final_response = "Refund cannot be processed because the order is not delivered yet."
+                            self.inflight.set(key, state.final_response)
+
+                            self.memory.add_message(session_id, "user", user_query)
+                            self.memory.add_message(
+                                session_id, "assistant", state.final_response
+                            )
+
+                            self.metrics.inc("requests_success")
+                            return state
+
+                        # -------- OTHER FAILURES --------
                         reason = getattr(result, "error", "unknown_failure")
 
                         recovery_plan = self._replan_on_failure(
-                            sub_intent, task, reason, memory_context
+                            last_intent, task, reason, memory_context
                         )
 
                         if recovery_plan.steps != plan.steps:
-
                             result = self.executor.execute(recovery_plan)
 
                             if result and (
                                 not hasattr(result, "success") or result.success
                             ):
-                                plan = recovery_plan
                                 state.metadata["execution_recovered"] = True
                             else:
                                 self.metrics.inc("execution_replan_failed")
@@ -328,7 +401,7 @@ class Orchestrator:
                     ):
 
                         self._escalate(
-                            session_id, user_query, sub_intent, "Multi-step failure"
+                            session_id, user_query, last_intent, "Multi-step failure"
                         )
 
                         state.final_response = (
@@ -343,84 +416,59 @@ class Orchestrator:
 
                         return state
 
-                    final_result = result
+                    if hasattr(result, "data") and getattr(result, "data", None):
+                        final_result = result
 
-                # -------- RESPONSE --------
-                result = final_result
+                # -------- TERMINATION GUARANTEE --------
+                if not final_result:
+                    # fallback to deterministic retry once
+                    plan = self.planner.create_plan(intent, user_query)
+                    final_result = self.executor.execute(plan)
 
-                if hasattr(result, "data"):
-                    data = result.data
-
-                    if intent == "order_status":
-                        response = f"Your order {data.get('order_id')} is {data.get('status')} and expected by {data.get('delivery_eta')}."
-                    elif intent == "refund_request":
-                        response = f"Refund status for order {data.get('order_id')} is {data.get('status')}."
-                    else:
-                        response = f"Ticket {data.get('ticket_id')} is currently {data.get('status')}."
-                else:
-                    response = "Something went wrong."
-
-                state.final_response = response
-                self.inflight.set(key, response)
-
-                self.metrics.inc("requests_success")
-
-                return state
-
-                # -------- RESPONSE FORMATTING --------
-                if isinstance(result, dict) and result.get("type") == "rag":
-                    response = self.rag.generate(user_query)
-
-                elif hasattr(result, "data"):
-                    data = result.data
-                    if intent == "greeting":
-                        response = "Hello! How can I assist you today?"
-                        state.final_response = response
-                        self.inflight.set(key, response)
-
-                        self.memory.add_message(session_id, "user", user_query)
-                        self.memory.add_message(session_id, "assistant", response)
-
-                        self.metrics.inc("requests_success")
+                    if not final_result or not getattr(final_result, "data", None):
+                        state.final_response = (
+                            "Your request has been escalated to a support agent."
+                        )
                         return state
-                    if intent == "order_status":
-                        response = f"Your order {data.get('order_id')} is {data.get('status')} and expected by {data.get('delivery_eta')}."
-                    elif intent == "refund_request":
-                        response = f"Refund status for order {data.get('order_id')} is {data.get('status')}."
-                    else:
-                        response = f"Ticket {data.get('ticket_id')} is currently {data.get('status')}."
-                else:
-                    response = "Unable to find details for the given order."
 
-                # -------- VALIDATION --------
-                if hasattr(result, "data") and not self.validator.validate(
-                    intent, response, result.data
-                ):
+                data = getattr(final_result, "data", None)
+
+                if not data:
                     self._escalate(
-                        session_id, user_query, intent, "Response validation failed"
+                        session_id, user_query, last_intent, "Missing tool data"
                     )
 
-                    response = "Your request has been escalated to a support agent."
-                    state.metadata["execution"] = "validation_failed"
+                    state.final_response = (
+                        "Your request has been escalated to a support agent."
+                    )
+                    state.metadata["execution"] = "invalid_tool_output"
 
                     self.metrics.inc("requests_failure")
                     self.metrics.inc("requests_escalated")
 
+                    self.inflight.set(key, state.final_response)
+
+                    return state
+
+                if last_intent == "order_status":
+                    response = f"Your order {data.get('order_id')} is {data.get('status')} and expected by {data.get('delivery_eta')}."
+                elif last_intent == "refund_request":
+                    response = f"Refund status for order {data.get('order_id')} is {data.get('status')}."
+                else:
+                    response = f"Ticket {data.get('ticket_id')} is currently {data.get('status')}."
+
                 state.final_response = response
                 self.inflight.set(key, response)
 
-                if (
-                    response
-                    and len(response) > 20
-                    and "\n" in response
-                    and not response.startswith("[")
-                    and "escalated" not in response.lower()
-                    and "something went wrong" not in response.lower()
-                ):
-                    self.semantic_cache.set(user_query, response)
+                self.memory.add_message(session_id, "user", user_query)
+                self.memory.add_message(session_id, "assistant", response)
+
+                latency = int((time.time() - start_time) * 1000)
+                self.metrics.observe("total_latency", latency)
 
                 self.metrics.inc("requests_success")
 
+                return state
             self.memory.add_message(session_id, "user", user_query)
             self.memory.add_message(session_id, "assistant", state.final_response)
 
@@ -452,6 +500,12 @@ class Orchestrator:
 
             intent = self.classifier.classify(user_query)
 
+            if "ticket" in user_query.lower():
+                intent = "create_ticket"
+
+            if any(p in user_query.lower() for p in ["refund policy", "refund rules"]):
+                intent = "refund_request"
+
             key = f"{session_id}:{self._normalize(user_query)}"
 
             if not self.inflight.set_if_absent(key):
@@ -461,13 +515,21 @@ class Orchestrator:
                     yield existing
                 return
 
-            tool_match = self.tool_selector.select(user_query)
-
-            if tool_match and intent == "general":
+            if intent in [
+                "order_status",
+                "refund_request",
+                "delivery_issue",
+                "create_ticket",
+            ]:
                 route = "tool"
-                intent = tool_match
             else:
-                route = self.router.route(intent)
+                tool_match = self.tool_selector.select(user_query)
+
+                if tool_match:
+                    route = "tool"
+                    intent = tool_match
+                else:
+                    route = self.router.route(intent)
 
             cache_key = f"{intent}:{self._normalize(user_query)}"
 
@@ -501,7 +563,9 @@ class Orchestrator:
             guard = self.guard.evaluate(user_query, intent)
 
             # -------- RAG --------
-            if guard["action"] == "fallback" or route == "rag":
+            if (
+                guard["action"] == "fallback" or route == "rag"
+            ) and intent != "refund_request":
 
                 if not self.rag_cb_stream.allow():
                     self.metrics.inc("circuit_open")
@@ -556,46 +620,45 @@ class Orchestrator:
                 self.metrics.inc("requests_success")
                 return
 
-                # -------- TOOL --------
-                if route == "tool":
+            # -------- TOOL --------
+            if route == "tool":
 
-                    memory_context = self._get_memory_context(session_id)
+                memory_context = self._get_memory_context(session_id)
 
-                    tasks = self.decomposer.decompose(user_query, memory_context)
+                if intent in ["order_status", "refund_request", "delivery_issue"]:
+                    tasks = [user_query]
+                else:
+                    tasks = self.decomposer.decompose(user_query, memory_context) or [
+                        user_query
+                    ]
 
-                    final_response = ""
+                final_response = ""
 
-                    for task in tasks:
+                last_intent = intent
 
+                for task in tasks:
+
+                    # DO NOT reclassify core intents
+                    if intent in [
+                        "order_status",
+                        "refund_request",
+                        "delivery_issue",
+                        "create_ticket",
+                    ]:
+                        sub_intent = intent
+                    else:
                         sub_intent = self.classifier.classify(task)
 
-                        plan = self._get_valid_plan(sub_intent, task, memory_context)
+                    last_intent = sub_intent
 
-                        result = self.executor.execute(plan)
+                    plan = self._get_valid_plan(last_intent, task, memory_context)
 
-                        # -------- FAILURE → REPLAN --------
-                        if not result or (
-                            hasattr(result, "success") and not result.success
-                        ):
+                    result = self.executor.execute(plan)
 
-                            reason = getattr(result, "error", "unknown_failure")
+                    if hasattr(result, "data") and last_intent == "order_status":
+                        data = getattr(result, "data", None)
 
-                            recovery_plan = self._replan_on_failure(
-                                sub_intent, task, reason, memory_context
-                            )
-
-                            if recovery_plan.steps != plan.steps:
-                                result = self.executor.execute(recovery_plan)
-
-                        # -------- FINAL FAILURE --------
-                        if not result or (
-                            hasattr(result, "success") and not result.success
-                        ):
-
-                            self._escalate(
-                                session_id, user_query, sub_intent, "Multi-step failure"
-                            )
-
+                        if not data:
                             final_response = (
                                 "Your request has been escalated to a support agent."
                             )
@@ -604,114 +667,90 @@ class Orchestrator:
                             self.metrics.inc("requests_escalated")
 
                             self.inflight.set(key, final_response)
+                            yield final_response
+                            return
+                        final_response = f"Your order {data.get('order_id')} is {data.get('status')} and expected by {data.get('delivery_eta')}."
+                        break
+
+                    if hasattr(result, "success") and not result.success:
+
+                        # -------- REFUND SPECIAL CASE --------
+                        if last_intent == "refund_request":
+                            final_response = "Refund cannot be processed because the order is not delivered yet."
+
+                            self.inflight.set(key, final_response)
+
+                            self.memory.add_message(session_id, "user", user_query)
+                            self.memory.add_message(
+                                session_id, "assistant", final_response
+                            )
+
+                            self.metrics.inc("requests_success")
 
                             yield final_response
                             return
 
-                        # -------- FORMAT --------
-                        if hasattr(result, "data"):
-                            data = result.data
+                        # -------- OTHER FAILURES --------
+                        reason = getattr(result, "error", "unknown_failure")
 
-                            if sub_intent == "order_status":
-                                final_response = f"Your order {data.get('order_id')} is {data.get('status')} and expected by {data.get('delivery_eta')}."
-                            elif sub_intent == "refund_request":
-                                final_response = f"Refund status for order {data.get('order_id')} is {data.get('status')}."
-                            else:
-                                final_response = f"Ticket {data.get('ticket_id')} is currently {data.get('status')}."
-                        else:
-                            final_response = "Something went wrong."
+                        recovery_plan = self._replan_on_failure(
+                            last_intent, task, reason, memory_context
+                        )
 
-                    # -------- STREAM OUTPUT --------
-                    for ch in final_response:
-                        yield ch
+                        if recovery_plan.steps != plan.steps:
+                            result = self.executor.execute(recovery_plan)
 
-                    self.inflight.set(key, final_response)
-                    self.metrics.inc("requests_success")
-
-                    return
-
-                # -------- RESPONSE FORMATTING --------
-                if isinstance(result, dict) and result.get("type") == "rag":
-
-                    if not self.rag_cb_stream.allow():
-                        self.metrics.inc("circuit_open")
-                        self.inflight.delete(key)
-                        yield "Service temporarily unavailable. Please try again later."
-                        return
-
-                    try:
-                        stream = self.rag.generate_stream(user_query)
-
-                        for t in stream:
-                            final_response += t
-                            yield t
-
-                        self.rag_cb_stream.record_success()
-
-                    except Exception:
-                        self.rag_cb_stream.record_failure()
-                        self.inflight.delete(key)
-                        raise
-
-                    self.inflight.set(key, final_response)
-                    self.cache.set(cache_key, final_response)
-
-                    if (
-                        final_response
-                        and len(final_response) > 20
-                        and "\n" in final_response
-                        and not final_response.startswith("[")
-                        and "escalated" not in final_response.lower()
-                        and "something went wrong" not in final_response.lower()
+                    if not result or (
+                        hasattr(result, "success") and not result.success
                     ):
-                        self.semantic_cache.set(user_query, final_response)
 
-                    self.memory.add_message(session_id, "user", user_query)
-                    self.memory.add_message(session_id, "assistant", final_response)
+                        self._escalate(
+                            session_id, user_query, last_intent, "Multi-step failure"
+                        )
 
-                    self.metrics.inc("requests_success")
+                        final_response = (
+                            "Your request has been escalated to a support agent."
+                        )
 
-                    return
+                        self.metrics.inc("requests_failure")
+                        self.metrics.inc("requests_escalated")
 
-                elif hasattr(result, "data"):
-                    data = result.data
-                    if intent == "greeting":
-                        response = "Hello! How can I assist you today?"
-                        self.inflight.set(key, response)
+                        self.inflight.set(key, final_response)
 
-                        self.memory.add_message(session_id, "user", user_query)
-                        self.memory.add_message(session_id, "assistant", response)
-
-                        yield response
+                        yield final_response
                         return
-                    if intent == "order_status":
+
+                    data = getattr(result, "data", None)
+
+                    if not data:
+                        final_response = (
+                            "Your request has been escalated to a support agent."
+                        )
+
+                        self.metrics.inc("requests_failure")
+                        self.metrics.inc("requests_escalated")
+
+                        self.inflight.set(key, final_response)
+                        yield final_response
+                        return
+
+                    if last_intent == "order_status":
                         final_response = f"Your order {data.get('order_id')} is {data.get('status')} and expected by {data.get('delivery_eta')}."
-                    elif intent == "refund_request":
+                    elif last_intent == "refund_request":
                         final_response = f"Refund status for order {data.get('order_id')} is {data.get('status')}."
                     else:
                         final_response = f"Ticket {data.get('ticket_id')} is currently {data.get('status')}."
-                else:
+                if not final_response:
                     final_response = "Something went wrong."
 
-                # -------- VALIDATION --------
-                if hasattr(result, "data") and not self.validator.validate(
-                    intent, final_response, result.data
-                ):
-                    self._escalate(
-                        session_id, user_query, intent, "Response validation failed"
-                    )
+                for ch in final_response:
+                    yield ch
 
-                    final_response = (
-                        "Your request has been escalated to a support agent."
-                    )
-
-                    self.inflight.set(key, final_response)
-                    self.metrics.inc("validation_failures")
-                    yield final_response
-                    return
-
-                self.metrics.inc("requests_success")
                 self.inflight.set(key, final_response)
+                self.metrics.inc("requests_success")
+
+                self.memory.add_message(session_id, "user", user_query)
+                self.memory.add_message(session_id, "assistant", final_response)
 
                 if (
                     final_response
@@ -723,10 +762,6 @@ class Orchestrator:
                 ):
                     self.semantic_cache.set(user_query, final_response)
 
-                self.memory.add_message(session_id, "user", user_query)
-                self.memory.add_message(session_id, "assistant", final_response)
-
-                yield final_response
                 return
 
             self.inflight.delete(key)
@@ -783,29 +818,55 @@ class Orchestrator:
 
     def _get_valid_plan(self, intent, user_query, context=""):
 
-        error = None
+        if intent == "order_status":
+            return Plan([Step("get_order", {"query": user_query})], query=user_query)
 
-        plan = self.planner.create_plan(intent, user_query)
-        plan, error = self.plan_validator.validate(plan)
+        if intent == "refund_request":
 
-        if not plan:
-            self.metrics.inc("plan_retry")
+            # POLICY QUERY (NO ORDER ID)
+            if not re.search(r"ORD\d+", user_query.upper()):
+                return Plan(
+                    [
+                        Step("fallback_rag", {"query": "refund policy"}),
+                    ],
+                    query=user_query,
+                )
 
-            plan = self.planner._llm_plan(
-                user_query,
-                feedback=error,
-                context=context,
-            )
-
-            plan, _ = self.plan_validator.validate(plan)
-
-        if not plan:
-            plan = Plan(
-                [Step("fallback_rag", {"query": user_query})],
+            # ACTUAL REFUND FLOW
+            return Plan(
+                [
+                    Step("get_order", {"query": user_query}),
+                    Step("process_refund", {}),
+                ],
                 query=user_query,
             )
 
-        self.metrics.inc("plan_generated")
+        if intent == "delivery_issue":
+            return Plan(
+                [
+                    Step("get_order", {"query": user_query}),
+                    Step("check_ticket", {}),
+                    Step("create_or_fetch_ticket", {}),
+                ],
+                query=user_query,
+            )
+
+        if intent == "create_ticket":
+            return Plan(
+                [
+                    Step("get_order", {"query": user_query}),
+                    Step("check_ticket", {}),
+                    Step("create_or_fetch_ticket", {}),
+                ],
+                query=user_query,
+            )
+
+        # only non-core intents use LLM planning
+        plan = self.planner.create_plan(intent, user_query)
+        plan, _ = self.plan_validator.validate(plan)
+
+        if not plan:
+            return Plan([Step("fallback_rag", {"query": user_query})], query=user_query)
 
         return plan
 

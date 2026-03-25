@@ -23,6 +23,9 @@ class IntentClassifier:
         if q in ["hi", "hello", "hey"]:
             return "greeting"
         # -------- REFUND (highest priority) --------
+        if "refund policy" in q or "policy" in q:
+            return "general"
+
         if "refund" in q or "money back" in q:
             return "refund_request"
 

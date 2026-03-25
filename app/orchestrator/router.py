@@ -29,6 +29,6 @@ class Router:
             return "tool"
 
         elif intent == "general":
-            return "direct_llm"
+            return "rag"
 
         return "direct_llm"
