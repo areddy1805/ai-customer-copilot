@@ -9,9 +9,9 @@ class Retriever:
         self.store = VectorStore()
         self.top_k = top_k
 
-    def retrieve(self, query: str) -> str:
+    def retrieve(self, query: str) -> List[str]:
         """
-        Retrieve relevant context for a query
+        Retrieve relevant context as list of clean chunks
         """
 
         query_embedding = self.embedder.embed_query(query)
@@ -21,21 +21,19 @@ class Retriever:
         documents = results.get("documents", [[]])[0]
         metadatas = results.get("metadatas", [[]])[0]
 
-        context = self._build_context(documents, metadatas)
+        return self._build_chunks(documents, metadatas)
 
-        return context
-
-    def _build_context(self, documents: List[str], metadatas: List[dict]) -> str:
+    def _build_chunks(self, documents: List[str], metadatas: List[dict]) -> List[str]:
         """
-        Combine retrieved chunks into structured context
+        Return clean chunks (no metadata pollution)
         """
 
-        context_parts = []
+        chunks = []
 
         for doc, meta in zip(documents, metadatas):
-            section = meta.get("section", "unknown")
-            source = meta.get("source", "unknown")
+            if not doc:
+                continue
 
-            context_parts.append(f"[Source: {source} | Section: {section}]\n{doc}")
+            chunks.append(doc.strip())
 
-        return "\n\n".join(context_parts)
+        return chunks

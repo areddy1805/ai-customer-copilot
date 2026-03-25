@@ -19,21 +19,28 @@ class IntentClassifier:
     def classify(self, query: str) -> str:
         q = query.lower()
 
-        # -------- ORDER STATUS --------
-        if "order" in q and any(x in q for x in ["where", "status", "track"]):
-            return "order_status"
-
-        # -------- REFUND --------
+        # -------- GREETING --------
+        if q in ["hi", "hello", "hey"]:
+            return "greeting"
+        # -------- REFUND (highest priority) --------
         if "refund" in q or "money back" in q:
             return "refund_request"
 
-        # -------- CANCELLATION --------
-        if "cancel" in q:
-            return "cancellation"
+        # -------- TICKET / ISSUE --------
+        if "ticket" in q or "issue" in q or "problem" in q:
+            return "delivery_issue"
+
+        # -------- ORDER STATUS --------
+        if "order" in q:
+            return "order_status"
 
         # -------- DELIVERY --------
         if any(x in q for x in ["delayed", "late", "not delivered", "delay"]):
             return "delivery_issue"
+
+        # -------- CANCELLATION --------
+        if "cancel" in q:
+            return "cancellation"
 
         # -------- ACCOUNT --------
         if any(x in q for x in ["account", "address", "update profile"]):

@@ -21,6 +21,8 @@ from app.observability.metrics import Metrics
 from app.guard.response_validator import ResponseValidator
 from app.rag.embedder import Embedder
 from app.cache.semantic_cache import SemanticCache
+from app.orchestrator.planner import Planner
+from app.orchestrator.executor import Executor
 
 
 import re
@@ -57,6 +59,17 @@ class Orchestrator:
 
         self.embedder = Embedder()
         self.semantic_cache = SemanticCache(self.embedder)
+
+        self.planner = Planner()
+        self.executor = Executor(
+            {
+                "order": self.order_tool,
+                "refund": self.refund_tool,
+                "ticket": self.ticket_tool,
+                "extract_order_id": self._extract_order_id,
+            }
+        )
+        self.semantic_cache.store = []
 
     # ================= RUN =================
     def run(self, user_query: str, session_id: str) -> ConversationState:
@@ -203,6 +216,8 @@ class Orchestrator:
                 if (
                     response
                     and len(response) > 20
+                    and "\n" in response
+                    and not response.startswith("[")
                     and "escalated" not in response.lower()
                     and "something went wrong" not in response.lower()
                 ):
@@ -220,73 +235,66 @@ class Orchestrator:
 
             # -------- DIRECT LLM --------
             if route == "direct_llm":
-
-                if not self.llm_cb.allow():
-                    self.metrics.inc("circuit_open")
-                    state.final_response = (
-                        "Service temporarily unavailable. Please try again later."
-                    )
-                    self.inflight.delete(key)
-                    return state
-
-                try:
-                    response = retry(
-                        lambda: self.llm.generate(TaskType.GENERAL, user_query)
-                    )
-                    self.llm_cb.record_success()
-                except Exception:
-                    self.llm_cb.record_failure()
-                    self.inflight.delete(key)
-                    raise
-
-                if not self.validator.validate(intent, response):
-                    response = "Unable to process your request accurately."
-                    self.metrics.inc("validation_failures")
+                response = "Please provide more specific details."
 
                 state.final_response = response
-                self.cache.set(cache_key, response)
                 self.inflight.set(key, response)
-                if (
-                    response
-                    and len(response) > 20
-                    and "escalated" not in response.lower()
-                    and "something went wrong" not in response.lower()
-                ):
-                    self.semantic_cache.set(user_query, response)
+
+                self.memory.add_message(session_id, "user", user_query)
+                self.memory.add_message(session_id, "assistant", response)
+
                 self.metrics.inc("requests_success")
+                return state
 
             # -------- TOOL --------
             elif route == "tool":
 
-                order_id = self._extract_order_id(user_query)
-
-                if intent == "order_status":
-                    res = self.order_tool.get_order_status({"order_id": order_id})
-                elif intent == "refund_request":
-                    res = self.refund_tool.process_refund({"order_id": order_id})
-                else:
-                    res = self.ticket_tool.create_ticket(
-                        {"user_id": "USR1", "order_id": order_id, "issue": intent}
+                plan = self.planner.create_plan(intent, user_query)
+                result = self.executor.execute(plan)
+                if not result or (hasattr(result, "success") and not result.success):
+                    self._escalate(
+                        session_id, user_query, intent, "Plan execution failure"
                     )
 
-                if not res or not res.success:
-                    self._escalate(session_id, user_query, intent, "Tool failure")
                     response = "Your request has been escalated to a support agent."
                     state.final_response = response
                     state.metadata["execution"] = "escalated"
+
                     self.metrics.inc("requests_failure")
                     self.metrics.inc("requests_escalated")
+
                     self.inflight.set(key, response)
                     return state
 
-                if intent == "order_status":
-                    response = f"Your order {res.data.get('order_id')} is {res.data.get('status')} and expected by {res.data.get('delivery_eta')}."
-                elif intent == "refund_request":
-                    response = f"Refund status for order {res.data.get('order_id')} is {res.data.get('status')}."
-                else:
-                    response = f"Ticket {res.data.get('ticket_id')} is currently {res.data.get('status')}."
+                # -------- RESPONSE FORMATTING --------
+                if isinstance(result, dict) and result.get("type") == "rag":
+                    response = self.rag.generate(user_query)
 
-                if not self.validator.validate(intent, response, res.data):
+                elif hasattr(result, "data"):
+                    data = result.data
+                    if intent == "greeting":
+                        response = "Hello! How can I assist you today?"
+                        state.final_response = response
+                        self.inflight.set(key, response)
+
+                        self.memory.add_message(session_id, "user", user_query)
+                        self.memory.add_message(session_id, "assistant", response)
+
+                        self.metrics.inc("requests_success")
+                        return state
+                    if intent == "order_status":
+                        response = f"Your order {data.get('order_id')} is {data.get('status')} and expected by {data.get('delivery_eta')}."
+                    elif intent == "refund_request":
+                        response = f"Refund status for order {data.get('order_id')} is {data.get('status')}."
+                    else:
+                        response = f"Ticket {data.get('ticket_id')} is currently {data.get('status')}."
+                else:
+                    response = "Unable to find details for the given order."
+
+                # -------- VALIDATION --------
+                if hasattr(result, "data") and not self.validator.validate(
+                    intent, response, result.data
+                ):
                     self._escalate(
                         session_id, user_query, intent, "Response validation failed"
                     )
@@ -299,13 +307,17 @@ class Orchestrator:
 
                 state.final_response = response
                 self.inflight.set(key, response)
+
                 if (
                     response
                     and len(response) > 20
+                    and "\n" in response
+                    and not response.startswith("[")
                     and "escalated" not in response.lower()
                     and "something went wrong" not in response.lower()
                 ):
                     self.semantic_cache.set(user_query, response)
+
                 self.metrics.inc("requests_success")
 
             self.memory.add_message(session_id, "user", user_query)
@@ -354,7 +366,6 @@ class Orchestrator:
 
             if route != "tool":
 
-                # -------- SEMANTIC CACHE --------
                 cached = self.semantic_cache.get(user_query)
                 if cached:
                     self.metrics.inc("semantic_cache_hits")
@@ -364,7 +375,6 @@ class Orchestrator:
                 else:
                     self.metrics.inc("semantic_cache_misses")
 
-                # -------- EXACT CACHE --------
                 cached = self.cache.get(cache_key)
                 if cached:
                     self.metrics.inc("cache_hits")
@@ -393,13 +403,14 @@ class Orchestrator:
                     return
 
                 try:
-                    tokens = retry(
-                        lambda: list(self.llm.generate_stream(TaskType.RAG, user_query))
-                    )
-                    for t in tokens:
+                    stream = self.rag.generate_stream(user_query)
+
+                    for t in stream:
                         final_response += t
                         yield t
+
                     self.rag_cb_stream.record_success()
+
                 except Exception:
                     self.rag_cb_stream.record_failure()
                     self.inflight.delete(key)
@@ -411,6 +422,8 @@ class Orchestrator:
                 if (
                     final_response
                     and len(final_response) > 20
+                    and "\n" in final_response
+                    and not final_response.startswith("[")
                     and "escalated" not in final_response.lower()
                     and "something went wrong" not in final_response.lower()
                 ):
@@ -418,80 +431,112 @@ class Orchestrator:
 
                 self.memory.add_message(session_id, "user", user_query)
                 self.memory.add_message(session_id, "assistant", final_response)
+
+                self.metrics.inc("requests_success")
+
                 return
 
             # -------- DIRECT LLM --------
             if route == "direct_llm":
+                response = "Please provide more specific details."
 
-                if not self.llm_cb_stream.allow():
-                    self.metrics.inc("circuit_open")
-                    self.inflight.delete(key)
-                    yield "Service temporarily unavailable. Please try again later."
-                    return
-
-                try:
-                    tokens = retry(
-                        lambda: list(
-                            self.llm.generate_stream(TaskType.GENERAL, user_query)
-                        )
-                    )
-                    for t in tokens:
-                        final_response += t
-                        yield t
-                    self.llm_cb_stream.record_success()
-                except Exception:
-                    self.llm_cb_stream.record_failure()
-                    self.inflight.delete(key)
-                    raise
-
-                self.inflight.set(key, final_response)
-                self.cache.set(cache_key, final_response)
-
-                if (
-                    final_response
-                    and len(final_response) > 20
-                    and "escalated" not in final_response.lower()
-                    and "something went wrong" not in final_response.lower()
-                ):
-                    self.semantic_cache.set(user_query, final_response)
+                self.inflight.set(key, response)
+                yield response
 
                 self.memory.add_message(session_id, "user", user_query)
-                self.memory.add_message(session_id, "assistant", final_response)
+                self.memory.add_message(session_id, "assistant", response)
+
+                self.metrics.inc("requests_success")
                 return
 
             # -------- TOOL --------
             if route == "tool":
 
-                order_id = self._extract_order_id(user_query)
+                plan = self.planner.create_plan(intent, user_query)
+                result = self.executor.execute(plan)
 
-                if intent == "order_status":
-                    res = self.order_tool.get_order_status({"order_id": order_id})
-                elif intent == "refund_request":
-                    res = self.refund_tool.process_refund({"order_id": order_id})
-                else:
-                    res = self.ticket_tool.create_ticket(
-                        {"user_id": "USR1", "order_id": order_id, "issue": intent}
+                if not result or (hasattr(result, "success") and not result.success):
+                    self._escalate(
+                        session_id, user_query, intent, "Plan execution failure"
                     )
 
-                if not res or not res.success:
-                    self._escalate(session_id, user_query, intent, "Tool failure")
                     final_response = (
                         "Your request has been escalated to a support agent."
                     )
                     self.metrics.inc("requests_failure")
                     self.metrics.inc("requests_escalated")
+
                     self.inflight.set(key, final_response)
                     yield final_response
                     return
 
-                if intent == "order_status":
-                    final_response = f"Your order {res.data.get('order_id')} is {res.data.get('status')} and expected by {res.data.get('delivery_eta')}."
-                elif intent == "refund_request":
-                    final_response = f"Refund status for order {res.data.get('order_id')} is {res.data.get('status')}."
-                else:
-                    final_response = f"Ticket {res.data.get('ticket_id')} is currently {res.data.get('status')}."
+                # -------- RESPONSE FORMATTING --------
+                if isinstance(result, dict) and result.get("type") == "rag":
 
-                if not self.validator.validate(intent, final_response, res.data):
+                    if not self.rag_cb_stream.allow():
+                        self.metrics.inc("circuit_open")
+                        self.inflight.delete(key)
+                        yield "Service temporarily unavailable. Please try again later."
+                        return
+
+                    try:
+                        stream = self.rag.generate_stream(user_query)
+
+                        for t in stream:
+                            final_response += t
+                            yield t
+
+                        self.rag_cb_stream.record_success()
+
+                    except Exception:
+                        self.rag_cb_stream.record_failure()
+                        self.inflight.delete(key)
+                        raise
+
+                    self.inflight.set(key, final_response)
+                    self.cache.set(cache_key, final_response)
+
+                    if (
+                        final_response
+                        and len(final_response) > 20
+                        and "\n" in final_response
+                        and not final_response.startswith("[")
+                        and "escalated" not in final_response.lower()
+                        and "something went wrong" not in final_response.lower()
+                    ):
+                        self.semantic_cache.set(user_query, final_response)
+
+                    self.memory.add_message(session_id, "user", user_query)
+                    self.memory.add_message(session_id, "assistant", final_response)
+
+                    self.metrics.inc("requests_success")
+
+                    return
+
+                elif hasattr(result, "data"):
+                    data = result.data
+                    if intent == "greeting":
+                        response = "Hello! How can I assist you today?"
+                        self.inflight.set(key, response)
+
+                        self.memory.add_message(session_id, "user", user_query)
+                        self.memory.add_message(session_id, "assistant", response)
+
+                        yield response
+                        return
+                    if intent == "order_status":
+                        final_response = f"Your order {data.get('order_id')} is {data.get('status')} and expected by {data.get('delivery_eta')}."
+                    elif intent == "refund_request":
+                        final_response = f"Refund status for order {data.get('order_id')} is {data.get('status')}."
+                    else:
+                        final_response = f"Ticket {data.get('ticket_id')} is currently {data.get('status')}."
+                else:
+                    final_response = "Something went wrong."
+
+                # -------- VALIDATION --------
+                if hasattr(result, "data") and not self.validator.validate(
+                    intent, final_response, result.data
+                ):
                     self._escalate(
                         session_id, user_query, intent, "Response validation failed"
                     )
@@ -511,6 +556,8 @@ class Orchestrator:
                 if (
                     final_response
                     and len(final_response) > 20
+                    and "\n" in final_response
+                    and not final_response.startswith("[")
                     and "escalated" not in final_response.lower()
                     and "something went wrong" not in final_response.lower()
                 ):

@@ -31,8 +31,10 @@ def build_prompt(task: TaskType, query: str, context: str = "") -> str:
                 - DO NOT infer, generalize, or explain beyond the context
                 - DO NOT add advice or suggestions unless explicitly present in the context
                 - DO NOT mention contacting support unless explicitly stated in the context
-                - If the answer is not fully contained in the context, respond exactly with:
-                "I don't have that information."
+                - Answer ONLY using the provided context
+                - Do NOT ask for more information
+                - Do NOT generate generic support responses
+                - If answer not found, say: "I don't have that information"
 
                 Context:
                 {context}

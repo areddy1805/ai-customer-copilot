@@ -10,24 +10,71 @@ class RAGService:
         self.retriever = Retriever()
         self.llm = LLMService()
 
+    # ================= NON-STREAM =================
     def generate(self, query: str) -> str:
-        """
-        Full RAG pipeline:
-        query → retrieve → generate grounded response
-        """
+        chunks = self.retriever.retrieve(query)  # already List[str]
 
-        context = self.retriever.retrieve(query)
+        if not chunks:
+            return "No relevant information found."
 
-        response = self._enforce_strict_rag(response, context_chunks)
+        context = "\n".join(chunks)
 
-        return response
+        response = self.llm.generate(TaskType.RAG, query, context=context)
 
-    def _enforce_strict_rag(self, response: str, context_chunks: List[str]) -> str:
-        response = response.strip()
+        return self._enforce_strict_rag(response, chunks)
 
-        for chunk in context_chunks:
-            if response in chunk:
+    # ================= STREAM =================
+    def generate_stream(self, query: str):
+        chunks = self.retriever.retrieve(query)
+
+        if not chunks:
+            yield "No relevant information found."
+            return
+
+        context = "\n".join(chunks)
+
+        stream = self.llm.generate_stream(TaskType.RAG, query, context=context)
+
+        full_response = ""
+
+        for token in stream:
+            full_response += token
+
+        grounded = self._enforce_strict_rag(full_response, chunks)
+
+        # ONLY emit grounded response
+        yield grounded
+
+    # ================= ENFORCEMENT =================
+    def _enforce_strict_rag(self, response: str, chunks: List[str]) -> str:
+        response = (response or "").strip()
+
+        if not chunks:
+            return "No relevant information found."
+
+        # exact containment
+        for chunk in chunks:
+            if response and response in chunk:
                 return response
 
-        # fallback → force exact chunk
-        return context_chunks[0].strip()
+        # best match fallback
+        return chunks[0]
+
+    def _best_match(self, response: str, chunks: List[str]) -> str:
+        if not response:
+            return chunks[0]
+
+        response_tokens = set(response.lower().split())
+
+        best_chunk = chunks[0]
+        best_score = -1
+
+        for chunk in chunks:
+            chunk_tokens = set(chunk.lower().split())
+            score = len(response_tokens & chunk_tokens)
+
+            if score > best_score:
+                best_score = score
+                best_chunk = chunk
+
+        return best_chunk
