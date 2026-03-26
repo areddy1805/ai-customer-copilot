@@ -1,43 +1,15 @@
-import json
-from app.llm.service import LLMService
-from app.llm.models import TaskType
+import re
 
 
 class Decomposer:
-
-    def __init__(self):
-        self.llm = LLMService()
-
     def decompose(self, query: str, context: str = ""):
+        """
+        Splits multi-intent queries into atomic tasks
+        """
 
-        prompt = f"""
-    Break the query into atomic tasks.
+        # Split on conjunctions
+        parts = re.split(r"\band\b|\bthen\b|,", query.lower())
 
-    Conversation:
-    {context}
+        tasks = [p.strip() for p in parts if p.strip()]
 
-    Rules:
-    - Max 3 tasks
-    - Each task must be independent
-    - No explanation
-    - Output JSON
-
-    Format:
-    {{"tasks": ["...", "..."]}}
-
-    Query: {query}
-    """
-
-        try:
-            response = self.llm.generate(TaskType.GENERAL, prompt)
-            data = json.loads(response)
-
-            tasks = data.get("tasks", [])
-
-            if not tasks:
-                return [query]
-
-            return tasks[:3]
-
-        except Exception:
-            return [query]
+        return tasks if len(tasks) > 1 else [query]

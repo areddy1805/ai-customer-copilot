@@ -1,71 +1,60 @@
-class Executor:
+from dataclasses import dataclass
 
-    def __init__(self, tools):
+
+@dataclass
+class ToolResult:
+    success: bool
+    data: dict = None
+    error: str = None
+
+
+class Executor:
+    def __init__(self, tools: dict):
         self.tools = tools
 
     def execute(self, plan):
 
+        results = []
         context = {}
-        query = getattr(plan, "query", "")
 
         for step in plan.steps:
-            action = step.action
 
-            # -------- GET ORDER --------
-            if action in ["get_order", "order_status"]:
-                order_id = self.tools["extract_order_id"](
-                    step.input.get("query", query)
-                )
-                res = self.tools["order"].get_order_status({"order_id": order_id})
+            tool = self.tools.get(step.action)
 
-                if not res or not res.success:
-                    return res
+            if not tool:
+                return ToolResult(success=False, error=f"Unknown tool {step.action}")
 
-                # single-step plan → return immediately
-                if len(plan.steps) == 1:
-                    return res
+            inputs = {**context, **step.params}
 
-                context["order"] = res.data
-                continue
+            try:
+                if callable(tool):
+                    result = (
+                        tool(**inputs) if isinstance(inputs, dict) else tool(inputs)
+                    )
+                else:
+                    method = getattr(tool, self._resolve_method(step.action))
+                    result = method(inputs)
 
-            # -------- CHECK REFUND ELIGIBILITY --------
-            elif action == "check_refund_eligibility":
-                order = context.get("order")
-                if not order:
-                    return {"type": "rag", "query": query}
-                continue
+            except Exception as e:
+                return ToolResult(success=False, error=str(e))
 
-            # -------- PROCESS REFUND --------
-            elif action in ["process_refund", "refund_request"]:
-                order_id = context.get("order", {}).get("order_id") or self.tools[
-                    "extract_order_id"
-                ](step.input.get("query", query))
+            if not result or not result.success:
+                return result
 
-                res = self.tools["refund"].process_refund({"order_id": order_id})
-                return res
+            if result.data:
+                # store independent result snapshot
+                results.append(result.data.copy())
 
-            # -------- CHECK TICKET --------
-            elif action == "check_ticket":
-                continue
+                # update context for chaining
+                context.update(result.data)
 
-            # -------- CREATE / FETCH TICKET --------
-            elif action in ["create_or_fetch_ticket", "create_ticket"]:
-                order_id = context.get("order", {}).get("order_id") or self.tools[
-                    "extract_order_id"
-                ](step.input.get("query", query))
+        # -------- RETURN ALL STEP RESULTS --------
+        return ToolResult(success=True, data={"steps": results})
 
-                res = self.tools["ticket"].create_ticket(
-                    {
-                        "user_id": "USR1",
-                        "order_id": order_id,
-                        "issue": "delivery_issue",
-                    }
-                )
-                return res
-
-            # -------- RAG --------
-            elif action in ["fallback_rag", "rag"]:
-                return {"type": "rag", "query": step.input.get("query", query)}
-
-        # -------- FINAL FALLBACK --------
-        return {"type": "rag", "query": query}
+    def _resolve_method(self, action):
+        mapping = {
+            "order": "get_order_status",
+            "refund": "process_refund",
+            "ticket": "create_ticket",
+        }
+        return mapping.get(action)

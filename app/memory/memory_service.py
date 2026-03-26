@@ -11,9 +11,6 @@ class MemoryService:
         return f"session:{session_id}"
 
     def get_messages(self, session_id: str) -> List[Dict]:
-        """
-        Retrieve conversation history
-        """
         key = self._get_key(session_id)
         messages = self.redis.get(key)
 
@@ -23,24 +20,32 @@ class MemoryService:
         return messages
 
     def add_message(self, session_id: str, role: str, content: str):
-        """
-        Add a new message to memory
-        """
         key = self._get_key(session_id)
 
         messages = self.get_messages(session_id)
 
-        messages.append({"role": role, "content": content})
+        messages.append({"role": role, "content": self._sanitize(content)})
 
         messages = messages[-self.max_messages :]
+
+        for m in messages:
+            m["content"] = self._sanitize(m.get("content"))
+
         self.redis.set(key, messages, ttl=3600)
 
     def clear(self, session_id: str):
-        """
-        Clear session memory
-        """
         key = self._get_key(session_id)
         self.redis.delete(key)
 
     def get_history(self, session_id: str):
         return self.get_messages(session_id)
+
+    def _sanitize(self, value):
+        if isinstance(value, str):
+            return value
+        if hasattr(value, "data"):
+            data = getattr(value, "data", None)
+            if isinstance(data, dict) and "response" in data:
+                return data["response"]
+            return str(data)
+        return str(value)

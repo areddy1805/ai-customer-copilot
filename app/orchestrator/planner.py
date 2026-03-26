@@ -1,4 +1,5 @@
 import json
+import re
 from app.orchestrator.plan import Plan, Step
 from app.llm.service import LLMService
 from app.llm.models import TaskType
@@ -15,60 +16,35 @@ ALLOWED_ACTIONS = {
 
 
 class Planner:
+    def create_plan(self, intent: str, query: str, context: str = "") -> Plan:
 
-    def __init__(self):
-        self.llm = LLMService()
+        order_ids = re.findall(r"ORD\d+", query.upper())
 
-    def create_plan(self, intent: str, query: str):
-
-        q = query.lower()
-
-        # -------- HARD RULES --------
-        if "ticket" in q:
-            return Plan(
-                [
-                    Step("get_order", {"query": query}),
-                    Step("create_or_fetch_ticket", {}),
-                ],
-                query=query,
-            )
-
-        if intent == "refund_request":
-            return Plan(
-                [
-                    Step("get_order", {"query": query}),
-                    Step("check_refund_eligibility", {}),
-                    Step("process_refund", {}),
-                ],
-                query=query,
-            )
+        steps = []
 
         if intent == "order_status":
-            return Plan([Step("get_order", {"query": query})], query=query)
+            for oid in order_ids:
+                steps.append(Step("order", {"order_id": oid}))
 
-        if intent == "delivery_issue":
-            return Plan(
-                [
-                    Step("get_order", {"query": query}),
-                    Step("create_or_fetch_ticket", {}),
-                ],
-                query=query,
-            )
+        elif intent == "refund_request":
+            for oid in order_ids:
+                steps.append(Step("order", {"order_id": oid}))
+                steps.append(Step("refund", {"order_id": oid}))
 
-        # -------- LLM PLAN (ATTEMPT 1) --------
-        plan = self._llm_plan(query)
+        elif intent in ["delivery_issue", "create_ticket"]:
+            for oid in order_ids:
+                steps.append(Step("order", {"order_id": oid}))
+                steps.append(
+                    Step("ticket", {"order_id": oid, "issue": "delivery_issue"})
+                )
 
-        if plan:
-            return plan
+        elif intent == "refund_policy":
+            steps.append(Step("rag", {"query": query}))
 
-        # -------- RETRY WITH FEEDBACK --------
-        plan = self._llm_plan(query, feedback="Previous plan invalid or empty")
+        else:
+            steps.append(Step("rag", {"query": query}))
 
-        if plan:
-            return plan
-
-        # -------- FINAL FALLBACK --------
-        return Plan([Step("fallback_rag", {"query": query})], query=query)
+        return Plan(steps, query=query)
 
     # ================= LLM PLANNER =================
     def _llm_plan(self, query: str, feedback: str = "", context: str = ""):

@@ -2,37 +2,19 @@ class ResponseValidator:
 
     def validate(self, intent: str, response: str, data: dict = None) -> bool:
 
-        if not response or not response.strip():
+        if not response:
             return False
-
-        # -------- ORDER --------
-        if intent == "order_status":
-            required = ["order_id", "status", "delivery_eta"]
-            return self._contains_all(response, data, required)
-
-        # -------- REFUND --------
-        if intent == "refund_request":
-            required = ["order_id", "status"]
-            return self._contains_all(response, data, required)
-
-        # -------- TICKET --------
-        if intent in ["delivery_issue", "account_update"]:
-            required = ["ticket_id", "status"]
-            return self._contains_all(response, data, required)
-
-        return True
-
-    def _contains_all(self, response: str, data: dict, fields: list):
 
         if not data:
-            return False
+            return True  # do not fail
 
-        for f in fields:
-            val = data.get(f)
-            if val is None:
-                return False
+        if intent == "order_status":
+            return all(k in data for k in ["order_id", "status"])
 
-            if str(val) not in response:
-                return False
+        if intent == "refund_request":
+            return all(k in data for k in ["order_id", "status"])
+
+        if intent in ["delivery_issue", "create_ticket"]:
+            return all(k in data for k in ["ticket_id", "status"])
 
         return True

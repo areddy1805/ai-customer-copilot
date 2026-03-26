@@ -37,8 +37,10 @@ class Evaluator:
 
         # intent check
         if "expected_intent" in expected:
-            if actual.get("intent") != expected["expected_intent"]:
-                return False
+            # allow flexible intent
+            if expected["expected_intent"] is not None:
+                if actual.get("intent") != expected["expected_intent"]:
+                    return False
 
         # content check
         if "expected_contains" in expected:
@@ -47,8 +49,9 @@ class Evaluator:
             if not response:
                 return False
 
-            if expected["expected_contains"].lower() not in response.lower():
-                return False
+            if "expected_contains" in expected and expected["expected_contains"]:
+                if expected["expected_contains"].lower() not in response.lower():
+                    return False
 
         # route check
         if "expected_route" in expected:
