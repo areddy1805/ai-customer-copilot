@@ -64,41 +64,123 @@ It is a **controlled AI system** that:
 
 ## Architecture
 
-User Query
-↓
-Guard Layer (validation)
-↓
-Intent Classifier (rule-first)
-↓
-Decomposer (multi-intent split)
-↓
-Planner (deterministic steps)
-↓
-Executor (tool chaining)
-↓
-Response Builder
-↓
-Memory + Cache + Metrics
+```
+                        ┌──────────────────────────────┐
+                        │          User Query          │
+                        └──────────────┬───────────────┘
+                                       │
+                                       ▼
+                        ┌──────────────────────────────┐
+                        │        API Layer (FastAPI)   │
+                        │  /chat  /health              │
+                        └──────────────┬───────────────┘
+                                       │
+                                       ▼
+                    ┌──────────────────────────────────────┐
+                    │        Orchestrator (Core Brain)     │
+                    └──────────────────────────────────────┘
+                                       │
+        ┌──────────────────────────────┼──────────────────────────────┐
+        ▼                              ▼                              ▼
+┌───────────────┐          ┌────────────────────┐         ┌────────────────────┐
+│ Policy Guard  │          │ Intent Classifier  │         │   Memory Context   │
+│ (Validation)  │          │ (Rule-first)       │         │ (Session History)  │
+└───────┬───────┘          └─────────┬──────────┘         └─────────┬──────────┘
+        │                             │                              │
+        └──────────────┬──────────────┴──────────────┬───────────────┘
+                       ▼                             ▼
+               ┌───────────────┐           ┌────────────────────┐
+               │  Decomposer   │           │   Cache Layer      │
+               │ (Multi-intent)│           │ (Semantic + Resp)  │
+               └───────┬───────┘           └─────────┬──────────┘
+                       │                             │
+                       ▼                             ▼
+               ┌──────────────────────────────────────────┐
+               │              Planner                     │
+               │ (Deterministic Step Generation)          │
+               └─────────────────┬────────────────────────┘
+                                 │
+                                 ▼
+               ┌──────────────────────────────────────────┐
+               │               Executor                   │
+               │ (Sequential Tool Execution Engine)       │
+               └───────────────┬──────────────────────────┘
+                               │
+        ┌──────────────────────┼──────────────────────────────┐
+        ▼                      ▼                              ▼
+┌───────────────┐   ┌──────────────────┐          ┌────────────────────┐
+│ Order Tool    │   │ Refund Tool      │          │ Ticket Tool        │
+│ (DB lookup)   │   │ (Validation +    │          │ (Create/Fetch)     │
+│               │   │  business rules) │          │                    │
+└───────────────┘   └──────────────────┘          └────────────────────┘
+                               │
+                               ▼
+                    ┌──────────────────────────────┐
+                    │         RAG Service          │
+                    │ (Policies / Knowledge Base)  │
+                    └──────────────┬───────────────┘
+                                   │
+                                   ▼
+                    ┌──────────────────────────────┐
+                    │     Response Builder Layer   │
+                    │ (Structured → Natural Text)  │
+                    └──────────────┬───────────────┘
+                                   │
+                                   ▼
+                    ┌──────────────────────────────┐
+                    │   Observability & Metrics    │
+                    │ Logging / Latency / Errors   │
+                    └──────────────┬───────────────┘
+                                   │
+                                   ▼
+                        ┌──────────────────────────┐
+                        │      Final Response      │
+                        └──────────────────────────┘
+
+```
 
 ---
 
 ## Project Structure
 
-app/
-├── api/ # FastAPI endpoints
-├── orchestrator/ # Core brain (planner, executor, routing)
-├── tools/ # Deterministic business logic
-├── memory/ # Session memory (Redis/local)
-├── rag/ # Knowledge retrieval system
-├── guard/ # Safety + validation
-├── eval/ # Evaluation framework
-├── cache/ # Response + semantic cache
-├── security/ # Rate limiting, circuit breaker
-├── observability/ # Metrics + logging
+```
+.
+├── app/
+│   ├── api/                # FastAPI endpoints (chat, health)
+│   ├── orchestrator/       # Core brain (planning, execution, routing)
+│   │   ├── orchestrator.py
+│   │   ├── planner.py
+│   │   ├── executor.py
+│   │   ├── decomposer.py
+│   │   ├── classifier.py
+│   │   └── ...
+│   ├── tools/              # Business logic (order, refund, ticket)
+│   ├── rag/                # Retrieval system (embeddings, vector store)
+│   ├── memory/             # Session memory (Redis/local)
+│   ├── guard/              # Validation + safety layer
+│   ├── cache/              # Response + semantic caching
+│   ├── security/           # Rate limiting, circuit breaker, concurrency
+│   ├── observability/      # Metrics + logging
+│   ├── llm/                # LLM client + prompt layer
+│   ├── eval/               # Evaluation framework
+│   ├── core/               # Config + logging setup
+│   └── main.py             # Entry point
+│
+├── data/
+│   ├── mock_db/            # Mock business data (orders, refunds, tickets)
+│   ├── knowledge_base/     # Policy documents for RAG
+│   └── chroma/             # Vector store (auto-generated)
+│
+├── infra/
+│   ├── Dockerfile
+│   └── docker-compose.yml
+│
+├── scripts/                # Utility scripts
+├── tests/                  # Test cases
+├── requirements.txt
+└── README.md
 
-data/
-├── mock_db/ # Orders, refunds, tickets
-├── knowledge_base/ # Policy documents
+```
 
 ---
 
