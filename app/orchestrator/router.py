@@ -19,6 +19,9 @@ class Router:
         elif intent == "refund_request":
             return "tool"
 
+        elif intent == "refund_policy":
+            return "rag"
+
         elif intent == "cancellation":
             return "tool"
 

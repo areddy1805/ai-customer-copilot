@@ -24,6 +24,7 @@ class Evaluator:
                 "response": state.final_response,
                 "latency": latency,
                 "metadata": state.metadata,
+                "plan": state.metadata.get("plans"),
             }
 
             result["pass"] = self._evaluate(item, result)
@@ -36,17 +37,29 @@ class Evaluator:
 
         # intent check
         if "expected_intent" in expected:
-            if actual["intent"] != expected["expected_intent"]:
+            if actual.get("intent") != expected["expected_intent"]:
                 return False
 
         # content check
         if "expected_contains" in expected:
-            if expected["expected_contains"].lower() not in actual["response"].lower():
+            response = actual.get("response") or ""
+
+            if not response:
+                return False
+
+            if expected["expected_contains"].lower() not in response.lower():
                 return False
 
         # route check
         if "expected_route" in expected:
-            if actual["metadata"].get("route") != expected["expected_route"]:
+            metadata = actual.get("metadata") or {}
+
+            if metadata.get("route") != expected["expected_route"]:
+                return False
+
+        # plan check
+        if "expected_plan" in expected:
+            if actual.get("plan") != expected["expected_plan"]:
                 return False
 
         return True

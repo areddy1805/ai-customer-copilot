@@ -1,19 +1,22 @@
 from app.llm.service import LLMService
 from app.llm.models import TaskType
 
+
 VALID_INTENTS = {
     "order_status",
     "refund_request",
+    "refund_policy",
     "cancellation",
     "delivery_issue",
     "account_update",
+    "greeting",
     "general",
 }
 
 
 class IntentClassifier:
     """
-    Deterministic intent classifier
+    Deterministic intent classifier (strict separation: transactional vs informational)
     """
 
     def classify(self, query: str) -> str:
@@ -22,23 +25,29 @@ class IntentClassifier:
         # -------- GREETING --------
         if q in ["hi", "hello", "hey"]:
             return "greeting"
-        # -------- REFUND (highest priority) --------
-        if "refund policy" in q or "policy" in q:
-            return "general"
 
+        # -------- REFUND POLICY (informational) --------
+        if "refund policy" in q or "refund rules" in q:
+            return "refund_policy"
+
+        # -------- REFUND REQUEST (transactional) --------
         if "refund" in q or "money back" in q:
             return "refund_request"
 
-        # -------- TICKET / ISSUE --------
-        if "ticket" in q or "issue" in q or "problem" in q:
-            return "delivery_issue"
-
         # -------- ORDER STATUS --------
-        if "order" in q:
+        if "order" in q or "track" in q:
             return "order_status"
 
-        # -------- DELIVERY --------
+        # -------- CREATE TICKET --------
+        if "ticket" in q:
+            return "create_ticket"
+
+        # -------- DELIVERY ISSUE --------
         if any(x in q for x in ["delayed", "late", "not delivered", "delay"]):
+            return "delivery_issue"
+
+        # -------- GENERIC ISSUE --------
+        if "issue" in q or "problem" in q:
             return "delivery_issue"
 
         # -------- CANCELLATION --------
