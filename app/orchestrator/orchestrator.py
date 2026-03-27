@@ -1,3 +1,4 @@
+import uuid
 from app.orchestrator.state import ConversationState
 from app.orchestrator.classifier import IntentClassifier
 from app.orchestrator.router import Router
@@ -84,6 +85,11 @@ class Orchestrator:
 
     # ================= RUN =================
     def run(self, user_query: str, session_id: str) -> ConversationState:
+        self.metrics.inc("requests_total")
+        start_time = time.time()
+        state = ConversationState(user_query=user_query)
+        trace_id = str(uuid.uuid4())
+        state.metadata["trace_id"] = trace_id
 
         def _to_str(resp):
             if isinstance(resp, str):
@@ -133,10 +139,6 @@ class Orchestrator:
             )
 
             return state
-
-        self.metrics.inc("requests_total")
-        start_time = time.time()
-        state = ConversationState(user_query=user_query)
 
         try:
             # -------- RATE LIMIT --------
