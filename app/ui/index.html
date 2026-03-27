@@ -1,0 +1,116 @@
+<!doctype html>
+<html>
+  <head>
+    <title>AI Customer Copilot</title>
+
+    <style>
+      body {
+        margin: 0;
+        font-family: Arial, sans-serif;
+        background: #0f172a;
+        color: white;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        height: 100vh;
+      }
+
+      .container {
+        width: 100%;
+        max-width: 800px;
+        height: 90vh;
+        display: flex;
+        flex-direction: column;
+        background: #020617;
+        border: 1px solid #1e293b;
+        border-radius: 10px;
+        overflow: hidden;
+      }
+
+      .header {
+        padding: 16px;
+        font-weight: bold;
+        border-bottom: 1px solid #1e293b;
+        background: #020617;
+      }
+
+      .chat {
+        flex: 1;
+        overflow-y: auto;
+        padding: 20px;
+      }
+
+      .msg {
+        max-width: 70%;
+        padding: 12px;
+        margin-bottom: 12px;
+        border-radius: 10px;
+        line-height: 1.4;
+      }
+
+      .user {
+        background: #2563eb;
+        margin-left: auto;
+      }
+
+      .bot {
+        background: #1e293b;
+      }
+
+      .input-area {
+        display: flex;
+        padding: 12px;
+        border-top: 1px solid #1e293b;
+        background: #020617;
+      }
+
+      input {
+        flex: 1;
+        padding: 12px;
+        border: none;
+        border-radius: 6px;
+        outline: none;
+        font-size: 14px;
+      }
+
+      button {
+        margin-left: 10px;
+        padding: 12px 16px;
+        background: #2563eb;
+        color: white;
+        border: none;
+        border-radius: 6px;
+        cursor: pointer;
+      }
+
+      button:hover {
+        background: #1d4ed8;
+      }
+
+      .empty {
+        text-align: center;
+        color: #94a3b8;
+        margin-top: 40px;
+      }
+    </style>
+  </head>
+
+  <body>
+    <div class="container">
+      <div class="header">AI Customer Copilot</div>
+
+      <div id="chat" class="chat">
+        <div class="empty">
+          Ask anything about your order, refund, or delivery issue
+        </div>
+      </div>
+
+      <div class="input-area">
+        <input id="input" placeholder="Type your message..." />
+        <button onclick="send()">Send</button>
+      </div>
+    </div>
+
+    <script src="app.js"></script>
+  </body>
+</html>

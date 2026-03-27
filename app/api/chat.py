@@ -1,3 +1,4 @@
+import time
 from fastapi import APIRouter, Query
 from fastapi.responses import StreamingResponse
 
@@ -8,19 +9,10 @@ router = APIRouter()
 
 # -------- STREAMING --------
 def event_stream(query: str, session_id: str):
-    buffer = ""
-
     try:
-        for token in orch.run_stream(query, session_id):
-            buffer += token
-
-            if token.endswith((" ", ".", ",", "!", "?", "\n")):
-                yield f"data: {buffer}\n\n"
-                buffer = ""
-
-        if buffer:
-            yield f"data: {buffer}\n\n"
-
+        for chunk in orch.run_stream(query, session_id):
+            yield f"data: {chunk}\n\n"
+            time.sleep(0.05)  # simulate streaming
     except Exception as e:
         yield f"data: Error: {str(e)}\n\n"
 
