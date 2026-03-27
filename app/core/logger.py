@@ -1,56 +1,32 @@
 import json
-import time
 from datetime import datetime
 
 
 class Logger:
-    """
-    Simple structured logger
-    """
-
-    def log(self, event: str, data: dict):
-        log_entry = {
-            "timestamp": datetime.utcnow().isoformat(),
-            "event": event,
-            **data,
-        }
-
-        print(json.dumps(log_entry))
-
     def log_request(
         self,
         session_id: str,
         user_query: str,
         intent: str,
         route: str,
-        execution: str,
+        plans: list,
+        tools_used: list,
         latency_ms: int,
         status: str,
-        extra: dict = None,
+        error: str = None,
     ):
-        data = {
+        log = {
+            "event": "request_completed",
             "session_id": session_id,
             "query": user_query,
             "intent": intent,
             "route": route,
-            "execution": execution,
+            "plans": plans or [],
+            "tools_used": tools_used or [],
             "latency_ms": latency_ms,
             "status": status,
+            "error": error,
+            "timestamp": datetime.utcnow().isoformat(),
         }
 
-        if extra:
-            data.update(extra)
-
-        self.log(
-            event="request_complete",
-            data=data,
-        )
-
-    def log_error(self, session_id: str, error: str):
-        self.log(
-            event="error",
-            data={
-                "session_id": session_id,
-                "error": error,
-            },
-        )
+        print(json.dumps(log))

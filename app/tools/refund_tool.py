@@ -50,6 +50,7 @@ class RefundTool:
                         "status": existing_refund["status"],
                         "amount": existing_refund["amount"],
                         "mode": existing_refund["mode"],
+                        "_type": "refund",
                     },
                 )
 

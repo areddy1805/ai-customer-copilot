@@ -44,3 +44,6 @@ for r in results:
 print("\n=== FAILURES ===")
 for f in failures:
     print(f)
+
+print("\n=== METRICS ===")
+print(orch.metrics.snapshot())

@@ -1,3 +1,4 @@
+import time
 from dataclasses import dataclass
 
 
@@ -27,6 +28,8 @@ class Executor:
             inputs = {**context, **step.params}
 
             try:
+                start = time.time()
+
                 if callable(tool):
                     result = (
                         tool(**inputs) if isinstance(inputs, dict) else tool(inputs)
@@ -35,6 +38,8 @@ class Executor:
                     method = getattr(tool, self._resolve_method(step.action))
                     result = method(inputs)
 
+                latency = int((time.time() - start) * 1000)
+
             except Exception as e:
                 return ToolResult(success=False, error=str(e))
 
@@ -42,10 +47,14 @@ class Executor:
                 return result
 
             if result.data:
-                # store independent result snapshot
-                results.append(result.data.copy())
+                step_data = result.data.copy()
 
-                # update context for chaining
+                # attach observability metadata
+                step_data["_tool"] = step.action
+                step_data["_latency_ms"] = latency
+
+                results.append(step_data)
+
                 context.update(result.data)
 
         # -------- RETURN ALL STEP RESULTS --------
