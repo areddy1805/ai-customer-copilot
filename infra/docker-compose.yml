@@ -1,6 +1,18 @@
 version: "3.9"
 
 services:
+  api:
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile
+    container_name: copilot-api
+    ports:
+      - "8000:8000"
+    depends_on:
+      - redis
+      - postgres
+      - ollama
+
   redis:
     image: redis:7
     container_name: copilot-redis

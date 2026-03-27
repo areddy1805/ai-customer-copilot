@@ -34,17 +34,42 @@ function send() {
 
   botDiv.innerHTML = "";
 
+  let timeout;
+
   evt.onmessage = (e) => {
     botDiv.innerHTML += e.data.replace(/\n/g, "<br>");
+
+    clearTimeout(timeout);
+    timeout = setTimeout(() => {
+      input.disabled = false;
+      btn.disabled = false;
+      input.focus();
+      evt.close();
+    }, 200);
   };
 
   evt.onerror = () => {
     input.disabled = false;
     btn.disabled = false;
+    input.focus();
     evt.close();
   };
+
+  setTimeout(() => {
+    if (input.disabled) {
+      input.disabled = false;
+      btn.disabled = false;
+      input.focus();
+    }
+  }, 3000);
 }
 
+// Enter key support
 document.getElementById("input").addEventListener("keypress", function (e) {
   if (e.key === "Enter") send();
 });
+
+// Always focus input on load
+window.onload = () => {
+  document.getElementById("input").focus();
+};
