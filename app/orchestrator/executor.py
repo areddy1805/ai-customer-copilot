@@ -1,5 +1,6 @@
 import time
 from dataclasses import dataclass
+import asyncio
 
 
 @dataclass
@@ -67,3 +68,45 @@ class Executor:
             "ticket": "create_ticket",
         }
         return mapping.get(action)
+
+    async def execute_parallel(self, plan):
+
+        context = {}
+        results = []
+
+        for step in plan.steps:  # ← MUST BE SEQUENTIAL
+
+            tool = self.tools.get(step.action)
+
+            if not tool:
+                return ToolResult(success=False, error=f"Unknown tool {step.action}")
+
+            inputs = {**context, **step.params}
+
+            try:
+                start = time.time()
+
+                if callable(tool):
+                    result = tool(**inputs)
+                else:
+                    method = getattr(tool, self._resolve_method(step.action))
+                    result = method(inputs)
+
+                latency = int((time.time() - start) * 1000)
+
+            except Exception as e:
+                return ToolResult(success=False, error=str(e))
+
+            if not result or not result.success:
+                return result
+
+            step_data = (result.data or {}).copy()
+            step_data["_tool"] = step.action
+            step_data["_latency_ms"] = latency
+
+            results.append(step_data)
+
+            if result.data:
+                context.update(result.data)
+
+        return ToolResult(success=True, data={"steps": results})
