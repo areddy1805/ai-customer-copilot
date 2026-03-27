@@ -2,13 +2,37 @@
 
 ![Python](https://img.shields.io/badge/Python-3.9+-blue)
 ![FastAPI](https://img.shields.io/badge/FastAPI-Backend-green)
-![Ollama](https://img.shields.io/badge/LLM-Ollama-orange)
+![LLM](https://img.shields.io/badge/LLM-Ollama-orange)
+![UI](https://img.shields.io/badge/UI-Vanilla%20JS-black)
+![Streaming](https://img.shields.io/badge/Streaming-SSE-blueviolet)
 ![Status](https://img.shields.io/badge/Status-Production--Ready-brightgreen)
 ![License](https://img.shields.io/badge/License-MIT-lightgrey)
 
-A production-grade, stateful AI system for e-commerce customer support with deterministic orchestration, tool execution, memory, and RAG grounding.
+Production-grade AI system for e-commerce customer support with **deterministic orchestration, tool execution, memory, RAG grounding, streaming UI, and multi-intent reasoning**.
 
 ---
+
+## Demo
+
+🎥 [Watch Demo](assets/demo.mp4)
+
+---
+
+## Screenshots
+
+<table>
+<tr>
+<td><img src="assets/ui.png"></td>
+<td><img src="assets/stream.png"></td>
+</tr>
+<tr>
+<td><img src="assets/slot.png"></td>
+<td><img src="assets/multi.png"></td>
+</tr>
+<tr>
+<td colspan="2"><img src="assets/rag_tool.png"></td>
+</tr>
+</table>
 
 ## Overview
 
@@ -64,79 +88,41 @@ It is a **controlled AI system** that:
 
 ## Architecture
 
-```
-                        ┌──────────────────────────────┐
-                        │          User Query          │
-                        └──────────────┬───────────────┘
-                                       │
-                                       ▼
-                        ┌──────────────────────────────┐
-                        │        API Layer (FastAPI)   │
-                        │  /chat  /health              │
-                        └──────────────┬───────────────┘
-                                       │
-                                       ▼
-                    ┌──────────────────────────────────────┐
-                    │        Orchestrator (Core Brain)     │
-                    └──────────────────────────────────────┘
-                                       │
-        ┌──────────────────────────────┼──────────────────────────────┐
-        ▼                              ▼                              ▼
-┌───────────────┐          ┌────────────────────┐         ┌────────────────────┐
-│ Policy Guard  │          │ Intent Classifier  │         │   Memory Context   │
-│ (Validation)  │          │ (Rule-first)       │         │ (Session History)  │
-└───────┬───────┘          └─────────┬──────────┘         └─────────┬──────────┘
-        │                             │                              │
-        └──────────────┬──────────────┴──────────────┬───────────────┘
-                       ▼                             ▼
-               ┌───────────────┐           ┌────────────────────┐
-               │  Decomposer   │           │   Cache Layer      │
-               │ (Multi-intent)│           │ (Semantic + Resp)  │
-               └───────┬───────┘           └─────────┬──────────┘
-                       │                             │
-                       ▼                             ▼
-               ┌──────────────────────────────────────────┐
-               │              Planner                     │
-               │ (Deterministic Step Generation)          │
-               └─────────────────┬────────────────────────┘
-                                 │
-                                 ▼
-               ┌──────────────────────────────────────────┐
-               │               Executor                   │
-               │ (Sequential Tool Execution Engine)       │
-               └───────────────┬──────────────────────────┘
-                               │
-        ┌──────────────────────┼──────────────────────────────┐
-        ▼                      ▼                              ▼
-┌───────────────┐   ┌──────────────────┐          ┌────────────────────┐
-│ Order Tool    │   │ Refund Tool      │          │ Ticket Tool        │
-│ (DB lookup)   │   │ (Validation +    │          │ (Create/Fetch)     │
-│               │   │  business rules) │          │                    │
-└───────────────┘   └──────────────────┘          └────────────────────┘
-                               │
-                               ▼
-                    ┌──────────────────────────────┐
-                    │         RAG Service          │
-                    │ (Policies / Knowledge Base)  │
-                    └──────────────┬───────────────┘
-                                   │
-                                   ▼
-                    ┌──────────────────────────────┐
-                    │     Response Builder Layer   │
-                    │ (Structured → Natural Text)  │
-                    └──────────────┬───────────────┘
-                                   │
-                                   ▼
-                    ┌──────────────────────────────┐
-                    │   Observability & Metrics    │
-                    │ Logging / Latency / Errors   │
-                    └──────────────┬───────────────┘
-                                   │
-                                   ▼
-                        ┌──────────────────────────┐
-                        │      Final Response      │
-                        └──────────────────────────┘
+```mermaid
+flowchart TD
 
+A[User Query] --> B[API Layer - FastAPI]
+
+B --> C[Orchestrator]
+
+C --> D[Policy Guard]
+C --> E[Intent Classifier]
+C --> F[Memory Context]
+
+C --> G[Decomposer]
+
+G --> H[Planner]
+
+H --> I[Executor]
+
+I --> J[Order Tool]
+I --> K[Refund Tool]
+I --> L[Ticket Tool]
+
+J --> M[Tool Results]
+K --> M
+L --> M
+
+M --> N[RAG Service]
+
+N --> O[Response Builder]
+
+O --> P[Final Response]
+
+P --> Q[Observability / Metrics]
+
+G --> R[Cache Layer]
+C --> R
 ```
 
 ---
@@ -144,39 +130,52 @@ It is a **controlled AI system** that:
 ## Project Structure
 
 ```
+
 .
 ├── app/
-│   ├── api/                # FastAPI endpoints (chat, health)
-│   ├── orchestrator/       # Core brain (planning, execution, routing)
-│   │   ├── orchestrator.py
-│   │   ├── planner.py
-│   │   ├── executor.py
-│   │   ├── decomposer.py
-│   │   ├── classifier.py
-│   │   └── ...
-│   ├── tools/              # Business logic (order, refund, ticket)
-│   ├── rag/                # Retrieval system (embeddings, vector store)
-│   ├── memory/             # Session memory (Redis/local)
-│   ├── guard/              # Validation + safety layer
-│   ├── cache/              # Response + semantic caching
-│   ├── security/           # Rate limiting, circuit breaker, concurrency
-│   ├── observability/      # Metrics + logging
-│   ├── llm/                # LLM client + prompt layer
-│   ├── eval/               # Evaluation framework
-│   ├── core/               # Config + logging setup
-│   └── main.py             # Entry point
+│ ├── api/ # FastAPI endpoints (chat, health)
+│ ├── orchestrator/ # Core brain (planning, execution, routing)
+│ │ ├── orchestrator.py
+│ │ ├── planner.py
+│ │ ├── executor.py
+│ │ ├── decomposer.py
+│ │ ├── classifier.py
+│ │ └── ...
+│ ├── tools/ # Business logic (order, refund, ticket)
+│ ├── rag/ # Retrieval system (embeddings, vector store)
+│ ├── memory/ # Session memory (Redis/local)
+│ ├── guard/ # Validation + safety layer
+│ ├── cache/ # Response + semantic caching
+│ ├── security/ # Rate limiting, circuit breaker, concurrency
+│ ├── observability/ # Metrics + logging
+│ ├── llm/ # LLM client + prompt layer
+│ ├── eval/ # Evaluation framework
+│ ├── core/ # Config + logging setup
+│ └── main.py # Entry point
 │
+├── client/ # UI (HTML/CSS/JS)
+│ ├── index.html
+│ └── app.js
+|
 ├── data/
-│   ├── mock_db/            # Mock business data (orders, refunds, tickets)
-│   ├── knowledge_base/     # Policy documents for RAG
-│   └── chroma/             # Vector store (auto-generated)
+│ ├── mock_db/ # Mock business data (orders, refunds, tickets)
+│ ├── knowledge_base/ # Policy documents for RAG
+│ └── chroma/ # Vector store (auto-generated)
 │
 ├── infra/
-│   ├── Dockerfile
-│   └── docker-compose.yml
+│ ├── Dockerfile
+│ └── docker-compose.yml
+|
+├── assets/ # screenshots + demo video
+│ ├── ui.png
+│ ├── stream.png
+│ ├── slot.png
+│ ├── multi.png
+│ ├── rag_tool.png
+│ └── demo.mp4
 │
-├── scripts/                # Utility scripts
-├── tests/                  # Test cases
+├── scripts/ # Utility scripts
+├── tests/ # Test cases
 ├── requirements.txt
 └── README.md
 
@@ -251,79 +250,137 @@ Custom evaluation framework validates:
 
 Run:
 
-```bash
+`````markdown
+````bash
 python -m app.eval.eval_runner
 
 
-⸻
+---
 
-Running Locally
+## Running Locally
 
 1. Setup Environment
 
+```bash
 python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 
 
-⸻
+---
 
-2. Start Services
+2. Docker Setup
 
-docker-compose up -d
+Start Full Stack
+
+docker-compose -f infra/docker-compose.yml up --build
+
+Services
+	•	API → http://localhost:8000
+	•	Redis → localhost:6379
+	•	Postgres → localhost:5432
+	•	Ollama → http://localhost:11434
+
+---
+
+Pull LLM Model
+
+docker exec -it copilot-ollama ollama pull phi3
 
 
-⸻
+---
 
-3. Run API
+Stop
+
+docker-compose -f infra/docker-compose.yml down
+
+
+---
+
+3. Run API (Without Docker)
 
 uvicorn app.main:app --reload
 
 
-⸻
+---
 
-4. Test via API
+4. Start UI
 
-POST /chat
-{
-  "query": "Track ORD1 and refund ORD2"
-}
+cd client
+python -m http.server 3000
+
+Open:
+
+http://localhost:3000
 
 
-⸻
+---
+
+5. Test via API
+
+curl "http://localhost:8000/api/chat?query=Track%20ORD1%20and%20refund%20ORD2"
+
+
+---
 
 Tech Stack
+
+Backend
 	•	FastAPI
-	•	Ollama (phi3, mistral, llama, qwen)
-	•	Redis (memory + queues)
-	•	FAISS / Chroma (RAG)
-	•	Python (core orchestration)
+	•	Python
 
-⸻
+LLM
+	•	Ollama (phi3, mistral, llama3, qwen)
 
-What Makes This Different
+Retrieval (RAG)
+	•	Chroma / FAISS
 
-Feature	Chatbot	This System
-Tool execution	❌	✅
-Deterministic flow	❌	✅
-Multi-intent support	❌	✅
-Memory	Limited	Structured
-RAG grounding	Partial	Integrated
-Production readiness	Low	High
+Memory & State
+	•	In-memory session store (extensible to Redis)
+
+Frontend
+	•	Vanilla JavaScript
+	•	HTML / CSS
+	•	Server-Sent Events (SSE) for streaming
+
+Infrastructure (Optional)
+	•	Docker
+	•	Redis (for scaling memory/queues)
+
+---
+
+## What Makes This Different
+
+| Feature | Chatbot | This System |
+|--------|--------|------------|
+| Tool execution | ❌ | ✅ |
+| Deterministic flow | ❌ | ✅ |
+| Multi-intent support | ❌ | ✅ |
+| Memory | Limited | Structured |
+| RAG grounding | Partial | Integrated |
+| Production readiness | Low | High |
 
 
-⸻
+---
 
 Future Improvements
-	•	Replace FAISS with pgvector
-	•	Add async execution for tools
-	•	Introduce human-in-loop dashboard
-	•	Streaming responses (SSE/WebSockets)
-	•	Advanced observability dashboards
+	•	WebSocket-based streaming (upgrade from SSE)
+	•	Distributed task execution (Celery / queue-based workers)
+	•	Persistent memory (Redis / database-backed sessions)
+	•	pgvector for production-grade vector storage
+	•	Human-in-the-loop dashboard for escalations
+	•	Advanced observability (tracing, dashboards, alerts)
+	•	Authentication + multi-user session isolation
+	•	UI enhancements (chat history, session restore, theming)
 
-⸻
+---
 
 License
 
 MIT License
+````
+`````
+
+```
+
 ```
