@@ -8,7 +8,7 @@
 ![Status](https://img.shields.io/badge/Status-Production--Ready-brightgreen)
 ![License](https://img.shields.io/badge/License-MIT-lightgrey)
 
-Production-grade AI system for e-commerce customer support with **deterministic orchestration, tool execution, memory, RAG grounding, streaming UI, and multi-intent reasoning**.
+Production-grade AI system for e-commerce customer support with **deterministic orchestration, async execution, pluggable LLMs, streaming UI, RAG grounding, and multi-intent reasoning**.
 
 ---
 
@@ -45,6 +45,7 @@ It is a **controlled AI system** that:
 - Maintains conversation memory
 - Grounds responses using knowledge base (RAG)
 - Supports multi-intent queries deterministically
+- Streams responses in real time
 
 ---
 
@@ -56,11 +57,29 @@ It is a **controlled AI system** that:
 - Explicit step-by-step tool execution
 - Zero hallucination for critical actions
 
+### Async Execution Pipeline
+
+- Fully async orchestrator, RAG, and LLM layers
+- Parallel tool execution for multi-intent queries
+- Non-blocking streaming responses
+
+### Pluggable LLM Layer
+
+- Switchable providers (Azure OpenAI / Ollama)
+- Provider abstraction via factory pattern
+- Task-based model selection
+
+### Streaming (End-to-End)
+
+- SSE-based streaming API
+- Real token streaming for RAG (LLM-driven)
+- Simulated streaming for tool responses (consistent UX)
+
 ### Multi-Intent Handling
 
 - Query decomposition (`AND`, `THEN`)
-- Sequential plan execution
-- Aggregated responses
+- Parallel execution via async gather
+- Deterministic aggregation of results
 
 ### Tool Execution Layer
 
@@ -76,7 +95,7 @@ It is a **controlled AI system** that:
 ### RAG Integration
 
 - Policy grounding (refunds, delivery rules)
-- Context injection without overload
+- Strict grounding enforcement (no hallucinated policies)
 
 ### Guard & Safety Layer
 
@@ -97,7 +116,10 @@ B --> C[Orchestrator]
 
 C --> D[Policy Guard]
 C --> E[Intent Classifier]
-C --> F[Memory Context]
+C --> F[Memory Layer]
+
+F --> F1[In-Memory Store]
+F --> F2[Redis - optional]
 
 C --> G[Decomposer]
 
@@ -113,16 +135,38 @@ J --> M[Tool Results]
 K --> M
 L --> M
 
-M --> N[RAG Service]
+C --> N[RAG Service]
 
-N --> O[Response Builder]
+N --> N1[Retriever]
+N1 --> N2[Vector DB (Chroma / FAISS)]
+N --> N3[LLM Service]
 
-O --> P[Final Response]
+C --> O[LLM Service]
 
-P --> Q[Observability / Metrics]
+O --> O1[Provider Factory]
+O1 --> O2[Azure OpenAI]
+O1 --> O3[Ollama]
 
-G --> R[Cache Layer]
-C --> R
+M --> P[Response Builder]
+N --> P
+
+P --> Q[Streaming Layer (SSE)]
+
+Q --> R[Client UI]
+
+C --> S[Cache Layer]
+S --> S1[Response Cache]
+S --> S2[Semantic Cache]
+S --> S3[In-flight Dedup]
+
+C --> T[Security Layer]
+T --> T1[Rate Limiter]
+T --> T2[Concurrency Limiter]
+T --> T3[Circuit Breaker]
+
+C --> U[Observability]
+U --> U1[Metrics]
+U --> U2[Structured Logs]
 ```
 
 ---
@@ -148,7 +192,7 @@ C --> R
 │ ├── cache/ # Response + semantic caching
 │ ├── security/ # Rate limiting, circuit breaker, concurrency
 │ ├── observability/ # Metrics + logging
-│ ├── llm/ # LLM client + prompt layer
+│ ├── llm/ # provider abstraction (Azure / Ollama) /LLM client + prompt layer
 │ ├── eval/ # Evaluation framework
 │ ├── core/ # Config + logging setup
 │ └── main.py # Entry point
@@ -197,21 +241,29 @@ All decisions are orchestrator-controlled.
 
 ---
 
-### 2. Planner > Router
+### 2. Planner-Centric Execution
 
-Routing is simplified.
 Planner defines execution path.
+Router only assists.
 
 ---
 
 ### 3. Stateless Tools + Stateful Orchestrator
 
-- Tools are pure functions
-- Orchestrator manages context and flow
+- Tools = pure functions
+- Orchestrator = state + control
 
 ---
 
-### 4. Multi-Step Execution as First-Class Citizen
+### 4. Async + Parallel by Default
+
+- Multi-intent → parallel execution
+- Streaming → non-blocking
+- System remains responsive under load
+
+---
+
+### 5. Multi-Step Execution as First-Class Citizen
 
 Every query is treated as:
 
@@ -235,7 +287,18 @@ Track ORD1 and refund ORD2
 [order ORD2 → refund ORD2]
 
 → Response:
-Order + Refund combined
+Order + Refund combined (deterministic order)
+
+### RAG + Streaming
+
+What is refund policy
+
+→ Routed to RAG
+→ LLM streams tokens
+→ Grounded response enforced
+
+→ Response:
+Grounded response
 
 ---
 
@@ -330,6 +393,7 @@ Backend
 	•	Python
 
 LLM
+	•	Azure OpenAI
 	•	Ollama (phi3, mistral, llama3, qwen)
 
 Retrieval (RAG)
@@ -356,22 +420,28 @@ Infrastructure (Optional)
 | Tool execution         | ❌      | ✅           |
 | Deterministic flow     | ❌      | ✅           |
 | Multi-intent support   | ❌      | ✅           |
+| Async execution        | ❌      | ✅           |
+| Streaming 		     | ❌      | ✅           |
 | Memory                 | Limited | Structured  |
 | RAG grounding          | Partial | Integrated  |
 | Production readiness   | Low     | High        |
+| Pluggable LLMs 	     | ❌      | ✅           |
+| Observability          | Minimal | Integrated  |
+| Safety / Guardrails    | Weak    | Enforced    |
+| Production readiness   | Low	   | High        |
 
 
 ---
 
 Future Improvements
-	•	WebSocket-based streaming (upgrade from SSE)
-	•	Distributed task execution (Celery / queue-based workers)
-	•	Persistent memory (Redis / database-backed sessions)
-	•	pgvector for production-grade vector storage
-	•	Human-in-the-loop dashboard for escalations
-	•	Advanced observability (tracing, dashboards, alerts)
-	•	Authentication + multi-user session isolation
-	•	UI enhancements (chat history, session restore, theming)
+	•	True streaming tool execution (event-driven tools)
+	•	WebSockets (replace SSE)
+	•	Distributed execution (Celery / queues)
+	•	Persistent memory (Redis / DB)
+	•	pgvector for production RAG
+	•	Observability (tracing + dashboards)
+	•	Auth + multi-user sessions
+	•	UI improvements (history, sessions)
 
 ---
 
