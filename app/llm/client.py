@@ -6,7 +6,7 @@ from app.core.config import settings
 
 class OllamaClient:
     def __init__(self):
-        self.base_url = settings.ollama_base_url
+        self.base_url = settings.OLLAMA_BASE_URL
 
     def generate(
         self, model: str, prompt: str, stream: bool = False, timeout: int = 60

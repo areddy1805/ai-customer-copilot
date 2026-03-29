@@ -1,4 +1,5 @@
 from typing import List
+import asyncio
 
 from app.rag.retriever import Retriever
 from app.llm.service import LLMService
@@ -11,20 +12,20 @@ class RAGService:
         self.llm = LLMService()
 
     # ================= NON-STREAM =================
-    def generate(self, query: str) -> str:
-        chunks = self.retriever.retrieve(query)  # already List[str]
+    async def generate(self, query: str) -> str:
+        chunks = self.retriever.retrieve(query)
 
         if not chunks:
             return "No relevant information found."
 
         context = "\n".join(chunks)
 
-        response = self.llm.generate(TaskType.RAG, query, context=context)
+        response = await self.llm.generate(TaskType.RAG, query, context=context)
 
         return self._enforce_strict_rag(response, chunks)
 
     # ================= STREAM =================
-    def generate_stream(self, query: str):
+    async def generate_stream(self, query: str):
         chunks = self.retriever.retrieve(query)
 
         if not chunks:
@@ -33,17 +34,18 @@ class RAGService:
 
         context = "\n".join(chunks)
 
-        stream = self.llm.generate_stream(TaskType.RAG, query, context=context)
-
         full_response = ""
 
-        for token in stream:
+        async for token in self.llm.generate_stream(
+            TaskType.RAG, query, context=context
+        ):
             full_response += token
 
         grounded = self._enforce_strict_rag(full_response, chunks)
 
-        # ONLY emit grounded response
-        yield grounded
+        for word in grounded.split(" "):
+            yield word + " "
+            await asyncio.sleep(0.03)
 
     # ================= ENFORCEMENT =================
     def _enforce_strict_rag(self, response: str, chunks: List[str]) -> str:

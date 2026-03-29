@@ -1,49 +1,57 @@
+import asyncio
+
 from app.orchestrator.orchestrator import Orchestrator
 from app.eval.eval_dataset import EVAL_QUERIES
 from app.eval.evaluator import Evaluator
 from app.eval.failure_analyzer import FailureAnalyzer
 
 
-orch = Orchestrator()
+async def main():
+    orch = Orchestrator()
 
-# disable rate limiter for eval
-orch.rate_limiter.allow = lambda x: True
+    # disable rate limiter for eval
+    orch.rate_limiter.allow = lambda x: True
 
-evaluator = Evaluator(orch)
+    evaluator = Evaluator(orch)
 
-results = []
-for i, item in enumerate(EVAL_QUERIES):
-    state = orch.run(item["query"], f"eval_{i}")  # unique session per query
+    results = []
 
-    results.append(
-        {
-            "query": item["query"],
-            "intent": state.intent,
-            "response": state.final_response,
-            "metadata": state.metadata,
-            "plan": state.metadata.get("plans"),
-            "pass": evaluator._evaluate(
-                item,
-                {
-                    "intent": state.intent,
-                    "response": state.final_response,
-                    "metadata": state.metadata,
-                    "plan": state.metadata.get("plans"),
-                },
-            ),
-        }
-    )
+    for i, item in enumerate(EVAL_QUERIES):
+        state = await orch.run(item["query"], f"eval_{i}")  # FIX
 
-analyzer = FailureAnalyzer()
-failures = analyzer.analyze(results)
+        results.append(
+            {
+                "query": item["query"],
+                "intent": state.intent,
+                "response": state.final_response,
+                "metadata": state.metadata,
+                "plan": state.metadata.get("plans"),
+                "pass": evaluator._evaluate(
+                    item,
+                    {
+                        "intent": state.intent,
+                        "response": state.final_response,
+                        "metadata": state.metadata,
+                        "plan": state.metadata.get("plans"),
+                    },
+                ),
+            }
+        )
 
-print("\n=== RESULTS ===")
-for r in results:
-    print(r["query"], "->", "PASS" if r["pass"] else "FAIL")
+    analyzer = FailureAnalyzer()
+    failures = analyzer.analyze(results)
 
-print("\n=== FAILURES ===")
-for f in failures:
-    print(f)
+    print("\n=== RESULTS ===")
+    for r in results:
+        print(r["query"], "->", "PASS" if r["pass"] else "FAIL")
 
-print("\n=== METRICS ===")
-print(orch.metrics.snapshot())
+    print("\n=== FAILURES ===")
+    for f in failures:
+        print(f)
+
+    print("\n=== METRICS ===")
+    print(orch.metrics.snapshot())
+
+
+if __name__ == "__main__":
+    asyncio.run(main())  # FIX

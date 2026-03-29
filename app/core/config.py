@@ -1,22 +1,47 @@
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    app_env: str
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")  # ← CRITICAL FIX
 
-    redis_host: str
-    redis_port: int
+    # =========================
+    # APP
+    # =========================
+    APP_ENV: str = "local"
 
-    postgres_host: str
-    postgres_port: int
-    postgres_db: str
-    postgres_user: str
-    postgres_password: str
+    # =========================
+    # REDIS
+    # =========================
+    REDIS_HOST: str = "localhost"
+    REDIS_PORT: int = 6379
 
-    ollama_base_url: str
+    # =========================
+    # POSTGRES
+    # =========================
+    POSTGRES_HOST: str = "localhost"
+    POSTGRES_PORT: int = 5432
+    POSTGRES_DB: str = "copilot"
+    POSTGRES_USER: str = "admin"
+    POSTGRES_PASSWORD: str = "admin"
 
-    class Config:
-        env_file = ".env"
+    # =========================
+    # PROVIDER SWITCH
+    # =========================
+    LLM_PROVIDER: str = "local"
+
+    # =========================
+    # OLLAMA
+    # =========================
+    OLLAMA_BASE_URL: str = "http://localhost:11434"
+    OLLAMA_TIMEOUT: int = 60
+
+    # =========================
+    # AZURE OPENAI
+    # =========================
+    AZURE_OPENAI_API_KEY: str = ""
+    AZURE_OPENAI_ENDPOINT: str = ""
+    AZURE_OPENAI_API_VERSION: str = "2024-02-15-preview"
+    AZURE_OPENAI_DEPLOYMENT: str = "gpt-4o-mini"
 
 
 settings = Settings()

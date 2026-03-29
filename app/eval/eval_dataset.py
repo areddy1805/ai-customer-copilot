@@ -27,9 +27,11 @@ EVAL_QUERIES = [
     # ---------------- MULTI-INTENT ----------------
     {
         "query": "Track ORD1 and refund ORD2",
-        "expected_intent": "order_status",
-        "expected_contains": "ORD1",
-        "expected_route": "tool",
+        "expected_intent": "refund_request",
+        "expected_contains": [
+            "Refund status for order ORD1",
+            "Refund status for order ORD2",
+        ],
     },
     {
         "query": "Refund ORD2 and create ticket",

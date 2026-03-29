@@ -32,20 +32,22 @@ function send() {
   const url = `http://localhost:8000/api/stream?query=${encodeURIComponent(query)}`;
   const evt = new EventSource(url);
 
-  botDiv.innerHTML = "";
+  botDiv.innerText = "";
 
-  let timeout;
+  evt.onopen = () => {
+    botDiv.innerText = "";
+  };
 
   evt.onmessage = (e) => {
-    botDiv.innerHTML += e.data.replace(/\n/g, "<br>");
-
-    clearTimeout(timeout);
-    timeout = setTimeout(() => {
+    if (e.data === "[DONE]") {
       input.disabled = false;
       btn.disabled = false;
       input.focus();
       evt.close();
-    }, 200);
+      return;
+    }
+
+    botDiv.innerText += e.data;
   };
 
   evt.onerror = () => {
@@ -54,14 +56,6 @@ function send() {
     input.focus();
     evt.close();
   };
-
-  setTimeout(() => {
-    if (input.disabled) {
-      input.disabled = false;
-      btn.disabled = false;
-      input.focus();
-    }
-  }, 3000);
 }
 
 // Enter key support

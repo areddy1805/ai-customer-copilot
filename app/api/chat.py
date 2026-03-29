@@ -8,30 +8,35 @@ router = APIRouter()
 
 
 # -------- STREAMING --------
-def event_stream(query: str, session_id: str):
+async def event_stream(query: str, session_id: str):
     try:
-        for chunk in orch.run_stream(query, session_id):
+        async for chunk in orch.run_stream(query, session_id):
             yield f"data: {chunk}\n\n"
-            time.sleep(0.05)  # simulate streaming
+
+        # ---- END SIGNAL ----
+        yield "data: [DONE]\n\n"
+
     except Exception as e:
         yield f"data: Error: {str(e)}\n\n"
+        yield "data: [DONE]\n\n"
 
 
 @router.get("/stream")
-def stream_chat(query: str = Query(...), session_id: str = Query("default")):
+async def stream_chat(query: str = Query(...), session_id: str = Query("default")):
     return StreamingResponse(
-        event_stream(query, session_id), media_type="text/event-stream"
+        event_stream(query, session_id),
+        media_type="text/event-stream",
     )
 
 
 # -------- NORMAL CHAT (WITH DEBUG) --------
-@router.get("/chat")
-def chat(
-    query: str = Query(...),
-    session_id: str = Query("default"),
-    debug: bool = Query(False),
-):
-    state = orch.run(query, session_id)
+@router.post("/chat")
+async def chat(payload: dict):
+    query = payload.get("query")
+    session_id = payload.get("session_id", "default")
+    debug = payload.get("debug", False)
+
+    state = await orch.run(query, session_id)
 
     if not debug:
         return {"response": state.final_response}
