@@ -1,5 +1,6 @@
 from openai import AsyncAzureOpenAI
 from app.llm.provider import LLMProvider
+from app.llm.config import LLMConfig
 from app.core.config import settings
 
 
@@ -12,26 +13,21 @@ class AzureProvider(LLMProvider):
         )
         self.deployment = settings.AZURE_OPENAI_DEPLOYMENT
 
-    async def generate(self, prompt: str, **kwargs) -> str:
-        model = kwargs.get("model", self.deployment)
-
+    async def generate(self, prompt: str, config: LLMConfig) -> str:
         response = await self.client.responses.create(
-            model=model,
+            model=self.deployment,
             input=prompt,
-            temperature=kwargs.get("temperature", 0.2),
-            max_output_tokens=kwargs.get("max_tokens", 512),
+            temperature=config.temperature,
+            max_output_tokens=config.max_tokens,
         )
-
         return response.output[0].content[0].text
 
-    async def stream(self, prompt: str, **kwargs):
-        model = kwargs.get("model", self.deployment)
-
+    async def stream(self, prompt: str, config: LLMConfig):
         stream = await self.client.responses.stream(
-            model=model,
+            model=self.deployment,
             input=prompt,
-            temperature=kwargs.get("temperature", 0.2),
-            max_output_tokens=kwargs.get("max_tokens", 512),
+            temperature=config.temperature,
+            max_output_tokens=config.max_tokens,
         )
 
         async for event in stream:

@@ -13,7 +13,7 @@ class RAGService:
 
     # ================= NON-STREAM =================
     async def generate(self, query: str) -> str:
-        chunks = self.retriever.retrieve(query)
+        chunks = await self.retriever.retrieve(query)
 
         if not chunks:
             return "No relevant information found."
@@ -22,11 +22,11 @@ class RAGService:
 
         response = await self.llm.generate(TaskType.RAG, query, context=context)
 
-        return self._enforce_strict_rag(response, chunks)
+        return self._best_match(response, chunks)
 
     # ================= STREAM =================
     async def generate_stream(self, query: str):
-        chunks = self.retriever.retrieve(query)
+        chunks = await self.retriever.retrieve(query)
 
         if not chunks:
             yield "No relevant information found."
@@ -34,34 +34,13 @@ class RAGService:
 
         context = "\n".join(chunks)
 
-        full_response = ""
-
         async for token in self.llm.generate_stream(
             TaskType.RAG, query, context=context
         ):
-            full_response += token
-
-        grounded = self._enforce_strict_rag(full_response, chunks)
-
-        for word in grounded.split(" "):
-            yield word + " "
+            yield token
             await asyncio.sleep(0.03)
 
     # ================= ENFORCEMENT =================
-    def _enforce_strict_rag(self, response: str, chunks: List[str]) -> str:
-        response = (response or "").strip()
-
-        if not chunks:
-            return "No relevant information found."
-
-        # exact containment
-        for chunk in chunks:
-            if response and response in chunk:
-                return response
-
-        # best match fallback
-        return chunks[0]
-
     def _best_match(self, response: str, chunks: List[str]) -> str:
         if not response:
             return chunks[0]

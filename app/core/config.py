@@ -1,8 +1,9 @@
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import field_validator
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")  # ← CRITICAL FIX
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     # =========================
     # APP
@@ -25,23 +26,45 @@ class Settings(BaseSettings):
     POSTGRES_PASSWORD: str = "admin"
 
     # =========================
-    # PROVIDER SWITCH
+    # PROVIDERS
     # =========================
     LLM_PROVIDER: str = "local"
+    EMBEDDING_PROVIDER: str = "local"
 
     # =========================
-    # OLLAMA
+    # OLLAMA (LOCAL LLM)
     # =========================
     OLLAMA_BASE_URL: str = "http://localhost:11434"
     OLLAMA_TIMEOUT: int = 60
 
     # =========================
-    # AZURE OPENAI
+    # AZURE OPENAI (LLM)
     # =========================
     AZURE_OPENAI_API_KEY: str = ""
     AZURE_OPENAI_ENDPOINT: str = ""
-    AZURE_OPENAI_API_VERSION: str = "2024-02-15-preview"
+    AZURE_OPENAI_API_VERSION: str = "2024-12-01-preview"
     AZURE_OPENAI_DEPLOYMENT: str = "gpt-4o-mini"
+
+    # =========================
+    # AZURE OPENAI (EMBEDDINGS)
+    # =========================
+    AZURE_EMBEDDING_API_VERSION: str = "2024-12-01-preview"
+    AZURE_EMBEDDING_DEPLOYMENT: str = "text-embedding-3-small"
+
+    # =========================
+    # VALIDATION
+    # =========================
+    @field_validator("LLM_PROVIDER")
+    def validate_llm_provider(cls, v):
+        if v not in ["local", "azure"]:
+            raise ValueError("LLM_PROVIDER must be 'local' or 'azure'")
+        return v
+
+    @field_validator("EMBEDDING_PROVIDER")
+    def validate_embedding_provider(cls, v):
+        if v not in ["local", "azure"]:
+            raise ValueError("EMBEDDING_PROVIDER must be 'local' or 'azure'")
+        return v
 
 
 settings = Settings()

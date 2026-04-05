@@ -21,8 +21,9 @@ from app.security.circuit_breaker import CircuitBreaker
 from app.utils.retry import retry
 from app.observability.metrics import Metrics
 from app.guard.response_validator import ResponseValidator
-from app.rag.embedder import Embedder
-from app.cache.semantic_cache import SemanticCache
+
+# from app.rag.embedder import Embedder
+# from app.cache.semantic_cache import SemanticCache
 from app.orchestrator.planner import Planner
 from app.orchestrator.plan import Plan, Step
 from app.orchestrator.executor import Executor
@@ -64,8 +65,8 @@ class Orchestrator:
         self.metrics = Metrics()
         self.validator = ResponseValidator()
 
-        self.embedder = Embedder()
-        self.semantic_cache = SemanticCache(self.embedder)
+        # self.embedder = Embedder()
+        # self.semantic_cache = SemanticCache(self.embedder)
 
         self.planner = Planner()
         self.executor = Executor(
@@ -82,7 +83,7 @@ class Orchestrator:
         self.plan_validator = PlanValidator()
         self.decomposer = Decomposer()
 
-        self.semantic_cache.store = []
+        # self.semantic_cache.store = []
         self.session_state = {}
 
     # ================= RUN =================

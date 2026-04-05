@@ -38,3 +38,10 @@ class VectorStore:
         )
 
         return results
+
+    def reset(self):
+        """
+        Clear entire collection safely
+        """
+        self.client.delete_collection("knowledge_base")
+        self.collection = self.client.get_or_create_collection(name="knowledge_base")

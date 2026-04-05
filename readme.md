@@ -1,14 +1,14 @@
-# AI Customer Support Copilot
+# AI Customer Support Copilot (Hybrid Azure + Local AI System)
 
 ![Python](https://img.shields.io/badge/Python-3.9+-blue)
 ![FastAPI](https://img.shields.io/badge/FastAPI-Backend-green)
-![LLM](https://img.shields.io/badge/LLM-Ollama-orange)
-![UI](https://img.shields.io/badge/UI-Vanilla%20JS-black)
-![Streaming](https://img.shields.io/badge/Streaming-SSE-blueviolet)
-![Status](https://img.shields.io/badge/Status-Production--Ready-brightgreen)
+![LLM](https://img.shields.io/badge/LLM-Hybrid%20(Local%20%2B%20Azure)-orange)
+![RAG](https://img.shields.io/badge/RAG-Hybrid-blueviolet)
+![Streaming](https://img.shields.io/badge/Streaming-SSE-blue)
+![Status](https://img.shields.io/badge/Status-Production--Grade-brightgreen)
 ![License](https://img.shields.io/badge/License-MIT-lightgrey)
 
-Production-grade AI system for e-commerce customer support with **deterministic orchestration, async execution, pluggable LLMs, streaming UI, RAG grounding, and multi-intent reasoning**.
+Production-grade AI system for e-commerce customer support with **deterministic orchestration, hybrid LLM architecture, Azure-native integrations, and controlled RAG execution**.
 
 ---
 
@@ -36,72 +36,78 @@ Production-grade AI system for e-commerce customer support with **deterministic 
 
 ## Overview
 
-This system is not a chatbot.
+This is not a chatbot.
 
-It is a **controlled AI system** that:
+This is a **controlled AI execution system** where:
 
-- Executes real actions (order tracking, refunds, tickets)
-- Uses structured planning instead of raw LLM replies
-- Maintains conversation memory
-- Grounds responses using knowledge base (RAG)
-- Supports multi-intent queries deterministically
-- Streams responses in real time
+- LLMs assist, never control
+- Orchestrator owns all decisions
+- Tools execute business logic deterministically
+- RAG augments responses, not authority
+- Azure services are optional, pluggable components
+
+---
+
+## SYSTEM EVOLUTION
+
+### BEFORE
+- Local LLM (Ollama)
+- Local embeddings
+- Chroma vector DB
+
+### NOW (HYBRID)
+- Local LLM ↔ Azure OpenAI (switchable)
+- Local embeddings ↔ Azure embeddings
+- Chroma ↔ (next: Azure AI Search)
+- Deterministic orchestration preserved
 
 ---
 
 ## Core Capabilities
 
 ### Deterministic Orchestration
+- Planner → Executor pipeline
+- No direct LLM tool execution
+- Guaranteed execution correctness
 
-- Planner-driven execution (no direct LLM control)
-- Explicit step-by-step tool execution
-- Zero hallucination for critical actions
+### Hybrid LLM Layer
+- Azure OpenAI (Responses API)
+- Ollama (local fallback)
+- Runtime provider switching
 
-### Async Execution Pipeline
+### Hybrid Embeddings
+- Local: SentenceTransformers
+- Azure: text-embedding-3-small
+- Config-driven switching
 
-- Fully async orchestrator, RAG, and LLM layers
-- Parallel tool execution for multi-intent queries
-- Non-blocking streaming responses
+### RAG (Controlled)
+- Retriever + strict grounding
+- LLM cannot override retrieved facts
+- Post-response enforcement
 
-### Pluggable LLM Layer
+### Async + Streaming
+- Fully async pipeline
+- SSE streaming for responses
+- Parallel execution for multi-intent
 
-- Switchable providers (Azure OpenAI / Ollama)
-- Provider abstraction via factory pattern
-- Task-based model selection
+### Multi-Intent Execution
+- Query decomposition
+- Parallel tool execution
+- Deterministic aggregation
 
-### Streaming (End-to-End)
+### Tool Layer (Pure Functions)
+- Order tracking
+- Refund processing
+- Ticket creation
 
-- SSE-based streaming API
-- Real token streaming for RAG (LLM-driven)
-- Simulated streaming for tool responses (consistent UX)
+### Memory Layer
+- Session-scoped context
+- Extendable to Redis
 
-### Multi-Intent Handling
-
-- Query decomposition (`AND`, `THEN`)
-- Parallel execution via async gather
-- Deterministic aggregation of results
-
-### Tool Execution Layer
-
-- Order status retrieval
-- Refund processing with business rules
-- Support ticket creation
-
-### Memory System
-
-- Session-based conversation tracking
-- Context-aware execution
-
-### RAG Integration
-
-- Policy grounding (refunds, delivery rules)
-- Strict grounding enforcement (no hallucinated policies)
-
-### Guard & Safety Layer
-
-- Prompt injection protection
+### Guardrails
 - Input validation
-- Controlled escalation
+- Prompt injection protection
+- Execution safety
 
 ---
 
@@ -110,64 +116,92 @@ It is a **controlled AI system** that:
 ```mermaid
 flowchart TD
 
-A[User Query] --> B[API Layer - FastAPI]
+A[User] --> B[FastAPI]
 
 B --> C[Orchestrator]
 
-C --> D[Policy Guard]
-C --> E[Intent Classifier]
-C --> F[Memory Layer]
+C --> D[Classifier]
+C --> E[Decomposer]
+C --> F[Planner]
+C --> G[Executor]
 
-F --> F1[In-Memory Store]
-F --> F2[Redis - optional]
+G --> H[Tools]
+H --> H1[Order]
+H --> H2[Refund]
+H --> H3[Ticket]
 
-C --> G[Decomposer]
+C --> I[RAG Service]
 
-G --> H[Planner]
+I --> I1[Retriever]
+I1 --> I2[Embedding Provider]
+I2 --> I3[Local / Azure]
 
-H --> I[Executor]
+I1 --> I4[Vector Store]
+I4 --> I5[Chroma (Now)]
+I4 --> I6[Azure AI Search (Next)]
 
-I --> J[Order Tool]
-I --> K[Refund Tool]
-I --> L[Ticket Tool]
+I --> I7[LLM Service]
 
-J --> M[Tool Results]
-K --> M
-L --> M
+C --> J[LLM Service]
 
-C --> N[RAG Service]
+J --> K[Provider Factory]
+K --> L[Local LLM (Ollama)]
+K --> M[Azure OpenAI]
 
-N --> N1[Retriever]
-N1 --> N2[Vector DB (Chroma / FAISS)]
-N --> N3[LLM Service]
+C --> N[Memory]
 
-C --> O[LLM Service]
+C --> O[Streaming Layer]
 
-O --> O1[Provider Factory]
-O1 --> O2[Azure OpenAI]
-O1 --> O3[Ollama]
-
-M --> P[Response Builder]
-N --> P
-
-P --> Q[Streaming Layer (SSE)]
-
-Q --> R[Client UI]
-
-C --> S[Cache Layer]
-S --> S1[Response Cache]
-S --> S2[Semantic Cache]
-S --> S3[In-flight Dedup]
-
-C --> T[Security Layer]
-T --> T1[Rate Limiter]
-T --> T2[Concurrency Limiter]
-T --> T3[Circuit Breaker]
-
-C --> U[Observability]
-U --> U1[Metrics]
-U --> U2[Structured Logs]
+O --> P[Client]
 ```
+
+---
+
+Provider Abstraction (Core Design)
+
+LLM
+
+LLM_PROVIDER=local | azure
+
+	•	Local → Ollama
+	•	Azure → Responses API
+
+---
+
+Embeddings
+
+EMBEDDING_PROVIDER=local | azure
+
+	•	Local → SentenceTransformers
+	•	Azure → text-embedding-3-small
+
+---
+
+Key Insight (From Evaluation)
+
+System behavior:
+
+~90% → Tool execution
+~10% → RAG usage
+
+Implication:
+	•	Orchestrator dominates correctness
+	•	RAG quality matters only when invoked
+
+---
+
+Embedding Evaluation Result
+
+Query	Local	Azure
+didnt receive package	PASS	PASS+
+item came broken	PASS	PASS+
+shipping time	FAIL	PASS
+cancel after ordering	PASS	PASS+
+
+Conclusion
+	•	Azure embeddings improve semantic retrieval
+	•	Local embeddings rely on keyword overlap
+	•	System now exposes real retrieval differences
 
 ---
 
@@ -302,6 +336,101 @@ Grounded response
 
 ---
 
+---
+
+Configuration
+
+.env
+
+LLM_PROVIDER=local
+EMBEDDING_PROVIDER=azure
+
+AZURE_OPENAI_API_KEY=xxx
+AZURE_OPENAI_ENDPOINT=https://your-endpoint.openai.azure.com/
+
+AZURE_OPENAI_DEPLOYMENT=gpt-4o-mini
+AZURE_EMBEDDING_DEPLOYMENT=text-embedding-3-small
+
+
+---
+
+Runtime Visibility
+
+Logs active providers at startup:
+
+[CONFIG] LLM_PROVIDER=local
+[CONFIG] EMBEDDING_PROVIDER=azure
+
+
+---
+
+Running
+
+1. Install
+
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+
+
+---
+
+2. Reindex (CRITICAL)
+
+python -m scripts.reindex
+
+Must be run after:
+	•	embedding switch
+	•	knowledge base change
+
+---
+
+3. Run API
+
+uvicorn app.main:app --reload
+
+
+---
+
+4. Run UI
+
+cd client
+python -m http.server 3000
+
+
+---
+
+5. Test
+
+curl "http://localhost:8000/api/chat?query=Track%20ORD1%20and%20refund%20ORD2"
+
+
+---
+
+Evaluation
+
+System Eval
+
+python -m app.eval.eval_runner
+
+Validates:
+	•	intent classification
+	•	tool routing
+	•	execution correctness
+
+---
+
+Retriever Eval
+
+python -m scripts.test_retriever
+
+Validates:
+	•	embedding quality
+	•	semantic retrieval
+	•	chunk relevance
+
+---
+
 ## Evaluation System
 
 Custom evaluation framework validates:
@@ -313,10 +442,9 @@ Custom evaluation framework validates:
 
 Run:
 
-`````markdown
-````bash
+```text
 python -m app.eval.eval_runner
-
+```
 
 ---
 
@@ -324,10 +452,11 @@ python -m app.eval.eval_runner
 
 1. Setup Environment
 
-```bash
+```text
 python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
+```
 
 
 ---
@@ -433,24 +562,61 @@ Infrastructure (Optional)
 
 ---
 
-Future Improvements
-	•	True streaming tool execution (event-driven tools)
-	•	WebSockets (replace SSE)
-	•	Distributed execution (Celery / queues)
-	•	Persistent memory (Redis / DB)
-	•	pgvector for production RAG
-	•	Observability (tracing + dashboards)
-	•	Auth + multi-user sessions
-	•	UI improvements (history, sessions)
+Design Rules (Enforced)
+	•	LLM cannot execute tools
+	•	LLM cannot modify system state
+	•	Tools are pure functions
+	•	Orchestrator is the only decision layer
+	•	RAG is assistive, not authoritative
+	•	Azure is optional, not required
+
+---
+
+Tradeoffs
+
+Dimension	Local	Azure
+Latency	Low	Higher
+Cost	Zero	Per-token
+Control	Full	Limited
+Quality	Moderate	High
+Reliability	Depends on hardware	Managed
+
+
+---
+
+Current State
+
+Layer	Status
+Orchestrator	Stable
+Tool Execution	Stable
+LLM Control	Stable
+Embeddings	Hybrid
+RAG	Active
+Evaluation	Valid
+Azure Integration	Partial
+
+
+---
+
+Next Phase
+
+Azure AI Search
+
+Replace:
+
+Chroma
+
+With:
+
+Azure AI Search (Hybrid Retrieval)
+
+Add:
+	•	vector + keyword search
+	•	metadata filtering
+	•	ranking improvements
 
 ---
 
 License
 
 MIT License
-````
-`````
-
-```
-
-```
