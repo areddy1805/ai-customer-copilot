@@ -137,15 +137,15 @@ I1 --> I2[Embedding Provider]
 I2 --> I3[Local / Azure]
 
 I1 --> I4[Vector Store]
-I4 --> I5[Chroma (Now)]
-I4 --> I6[Azure AI Search (Next)]
+I4 --> I5[Chroma Now]
+I4 --> I6[Azure AI Search Next]
 
 I --> I7[LLM Service]
 
 C --> J[LLM Service]
 
 J --> K[Provider Factory]
-K --> L[Local LLM (Ollama)]
+K --> L[Local LLM Ollama]
 K --> M[Azure OpenAI]
 
 C --> N[Memory]
