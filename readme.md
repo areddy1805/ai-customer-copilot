@@ -136,18 +136,19 @@ C --> I[RAG Service]
 
 I --> I1[Retriever]
 I1 --> I2[Embedding Provider]
-I2 --> I3[Local / Azure]
+I2 --> I3[Local or Azure]
 
 I1 --> I4[Search Provider]
-I4 --> I5[Chroma (Local)]
-I4 --> I6[Azure AI Search (Hybrid)]
+
+I4 --> I5[Chroma Local]
+I4 --> I6[Azure AI Search Hybrid]
 
 I --> I7[LLM Service]
 
 C --> J[LLM Service]
 
 J --> K[Provider Factory]
-K --> L[Local LLM Ollama]
+K --> L[Ollama]
 K --> M[Azure OpenAI]
 
 C --> N[Memory]
