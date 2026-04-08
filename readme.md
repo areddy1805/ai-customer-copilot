@@ -58,7 +58,7 @@ This is a **controlled AI execution system** where:
 ### NOW (HYBRID)
 - Local LLM ↔ Azure OpenAI (switchable)
 - Local embeddings ↔ Azure embeddings
-- Chroma ↔ (next: Azure AI Search)
+- Chroma ↔ Azure AI Search (hybrid retrieval, switchable)
 - Deterministic orchestration preserved
 
 ---
@@ -80,10 +80,12 @@ This is a **controlled AI execution system** where:
 - Azure: text-embedding-3-small
 - Config-driven switching
 
-### RAG (Controlled)
+### RAG (Controlled + Hybrid Retrieval)
 - Retriever + strict grounding
 - LLM cannot override retrieved facts
 - Post-response enforcement
+- Backend: Chroma OR Azure AI Search
+- Azure enables hybrid retrieval (vector + keyword)
 
 ### Async + Streaming
 - Fully async pipeline
@@ -136,9 +138,9 @@ I --> I1[Retriever]
 I1 --> I2[Embedding Provider]
 I2 --> I3[Local / Azure]
 
-I1 --> I4[Vector Store]
-I4 --> I5[Chroma Now]
-I4 --> I6[Azure AI Search Next]
+I1 --> I4[Search Provider]
+I4 --> I5[Chroma (Local)]
+I4 --> I6[Azure AI Search (Hybrid)]
 
 I --> I7[LLM Service]
 
@@ -174,6 +176,20 @@ EMBEDDING_PROVIDER=local | azure
 
 	•	Local → SentenceTransformers
 	•	Azure → text-embedding-3-small
+
+---
+
+Search Provider (RAG Backend)
+
+SEARCH_PROVIDER=local | azure
+
+• Local → Chroma (vector-only retrieval)
+• Azure → Azure AI Search (hybrid: vector + keyword)
+
+Key Behavior:
+• Each provider maintains its own index
+• Switching provider requires reindex
+• No shared storage between providers
 
 ---
 
@@ -360,6 +376,7 @@ Logs active providers at startup:
 
 [CONFIG] LLM_PROVIDER=local
 [CONFIG] EMBEDDING_PROVIDER=azure
+[CONFIG] SEARCH_PROVIDER=azure
 
 
 ---
@@ -382,6 +399,7 @@ python -m scripts.reindex
 Must be run after:
 	•	embedding switch
 	•	knowledge base change
+  • search provider switch (local ↔ azure)
 
 ---
 
@@ -526,7 +544,8 @@ LLM
 	•	Ollama (phi3, mistral, llama3, qwen)
 
 Retrieval (RAG)
-	•	Chroma / FAISS
+  • Chroma (local vector DB)
+  • Azure AI Search (hybrid retrieval: vector + keyword)
 
 Memory & State
 	•	In-memory session store (extensible to Redis)
@@ -562,7 +581,7 @@ Infrastructure (Optional)
 
 ---
 
-Design Rules (Enforced)
+## Design Rules (Enforced)
 	•	LLM cannot execute tools
 	•	LLM cannot modify system state
 	•	Tools are pure functions
@@ -572,7 +591,7 @@ Design Rules (Enforced)
 
 ---
 
-Tradeoffs
+## Tradeoffs
 
 Dimension	Local	Azure
 Latency	Low	Higher
@@ -584,7 +603,7 @@ Reliability	Depends on hardware	Managed
 
 ---
 
-Current State
+## Current State
 
 Layer	Status
 Orchestrator	Stable
@@ -593,27 +612,137 @@ LLM Control	Stable
 Embeddings	Hybrid
 RAG	Active
 Evaluation	Valid
-Azure Integration	Partial
-
+Azure Integration	Active (LLM + Embeddings + Search)
 
 ---
 
-Next Phase
+## Hybrid Retrieval Architecture
 
-Azure AI Search
+The system supports interchangeable retrieval backends:
+
+• Local (Chroma) → fast, vector-only
+• Azure AI Search → hybrid (vector + keyword)
+
+Key Insight:
+Azure improves recall and semantic matching in real-world queries,
+especially where keyword mismatch occurs.
+
+Tradeoff:
+Higher latency + cost vs improved accuracy.
+
+---
+
+## Next Phase — System Hardening
+
+Shift from feature integration → production reliability.
+
+### 1. Caching Layer
+
+Add:
+• Embedding cache (avoid recomputation)
+• Retrieval cache (repeat queries)
+• Response cache (LLM output)
+
+Where:
+• Before embedding generation
+• Before Azure Search call
+• Before LLM call
+
+---
+
+### 2. Resilience + Fallback
+
+Implement:
+
+• Retry logic (Azure calls)
+• Timeout control
+• Circuit breaker
+
+Critical:
+
+If Azure fails:
+→ fallback to local providers
+
+Example:
+
+Azure Search → fallback to Chroma
+Azure LLM → fallback to Ollama
+
+---
+
+### 3. Observability
+
+Track:
+
+• Latency per component
+• Token usage (LLM + embeddings)
+• Retrieval time (Azure vs local)
+• Failure rate
+
+Goal:
+Make system measurable, not assumed.
+
+---
+
+### 4. Hybrid Retrieval Tuning
+
+Control:
+
+• Vector vs keyword weighting
+• Top-K per query type
+• Metadata filtering (source, section)
+
+Goal:
+Improve precision without increasing cost.
+
+---
+
+### 5. Indexing Strategy
+
+Move from:
+
+Manual reindex
+
+To:
+
+• Incremental indexing
+• Background ingestion
+• Document versioning
+
+---
+
+### 6. Production Storage
 
 Replace:
 
-Chroma
+Local files
 
 With:
 
-Azure AI Search (Hybrid Retrieval)
+• Azure Blob Storage (documents)
+• Persisted logs + transcripts
+
+---
+
+### 7. Security Hardening
 
 Add:
-	•	vector + keyword search
-	•	metadata filtering
-	•	ranking improvements
+
+• Key Vault for secrets
+• Rate limiting (API)
+• Abuse protection
+
+---
+
+## End State
+
+System becomes:
+
+• Cloud-backed
+• Fault-tolerant
+• Observable
+• Cost-aware
+• Production-ready at scale
 
 ---
 

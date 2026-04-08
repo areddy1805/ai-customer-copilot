@@ -1,15 +1,15 @@
 from app.rag.loader import DocumentLoader
 from app.rag.chunker import DocumentChunker
 from app.embeddings.provider_factory import get_embedding_provider
-from app.rag.vector_store import VectorStore
+from services.search.provider_factory import get_search_provider
 
 
 class Indexer:
     def __init__(self):
         self.loader = DocumentLoader()
         self.chunker = DocumentChunker()
-        self.provider = get_embedding_provider()
-        self.store = VectorStore()
+        self.embedding_provider = get_embedding_provider()
+        self.search_provider = get_search_provider()
 
     async def run(self):
         documents = self.loader.load_documents()
@@ -18,8 +18,20 @@ class Indexer:
 
         texts = [c["content"] for c in chunks]
 
-        embeddings = await self.provider.embed_batch(texts)
+        embeddings = await self.embedding_provider.embed_batch(texts)
 
-        self.store.reset()
+        formatted_docs = []
 
-        self.store.add_documents(chunks, embeddings)
+        for i, chunk in enumerate(chunks):
+            formatted_docs.append(
+                {
+                    "id": str(i),
+                    "content": chunk["content"],
+                    "source": chunk.get("metadata", {}).get("source", "unknown"),
+                    "embedding": embeddings[i],
+                }
+            )
+
+        print("TOTAL DOCS:", len(formatted_docs))
+
+        self.search_provider.index(formatted_docs)
