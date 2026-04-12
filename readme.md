@@ -48,6 +48,37 @@ This is a **controlled AI execution system** where:
 
 ---
 
+## Security & Secrets
+
+Secrets are not stored in code or config.
+
+### Secret Management
+
+- Azure Key Vault (primary)
+- Env-based fallback (local development only)
+
+### Supported Secret Providers
+
+SECRET_PROVIDER=env | keyvault
+
+Architecture:
+
+Providers → SecretProvider → (Env OR Key Vault)
+
+### Key Vault Integration
+
+- Secrets fetched at runtime
+- In-memory caching (no repeated network calls)
+- No secrets in `.env` (production mode)
+
+### Naming Constraint Handling
+
+Azure Key Vault does not support underscores.
+
+Internal mapping layer converts:
+
+AZURE_OPENAI_API_KEY → azure-openai-api-key
+
 ## SYSTEM EVOLUTION
 
 ### BEFORE
@@ -56,10 +87,10 @@ This is a **controlled AI execution system** where:
 - Chroma vector DB
 
 ### NOW (HYBRID)
-- Local LLM ↔ Azure OpenAI (switchable)
-- Local embeddings ↔ Azure embeddings
-- Chroma ↔ Azure AI Search (hybrid retrieval, switchable)
-- Deterministic orchestration preserved
+- Secrets → Azure Key Vault (secure, runtime retrieval)
+- LLM → Azure (primary) + Local (automatic fallback)
+- Resilience → Retry + Timeout + Circuit Breaker enforced
+- Response Cache → request-level caching (Redis/in-memory)
 
 ---
 
@@ -71,9 +102,15 @@ This is a **controlled AI execution system** where:
 - Guaranteed execution correctness
 
 ### Hybrid LLM Layer
-- Azure OpenAI (Responses API)
-- Ollama (local fallback)
-- Runtime provider switching
+- Azure OpenAI (primary)
+- Ollama (automatic fallback)
+- Retry + timeout enforced on Azure calls
+- Circuit breaker prevents cascading failures
+
+Behavior:
+
+Azure success → used
+Azure failure → automatic fallback to local
 
 ### Hybrid Embeddings
 - Local: SentenceTransformers
@@ -111,6 +148,15 @@ This is a **controlled AI execution system** where:
 - Prompt injection protection
 - Execution safety
 
+### Resilience Layer
+
+- Retry with exponential backoff (Azure calls)
+- Timeout enforcement (prevents hanging requests)
+- Circuit breaker (failure isolation)
+- Automatic fallback (Azure → Local)
+
+Ensures system never fails due to external dependency.
+
 ---
 
 ## Architecture
@@ -122,16 +168,23 @@ A[User] --> B[FastAPI]
 
 B --> C[Orchestrator]
 
+%% ================= CORE =================
 C --> D[Classifier]
 C --> E[Decomposer]
 C --> F[Planner]
 C --> G[Executor]
 
+%% ================= CACHE =================
+C --> CA[Response Cache]
+CA -->|hit| Z[Return Response]
+
+%% ================= TOOLS =================
 G --> H[Tools]
 H --> H1[Order]
 H --> H2[Refund]
 H --> H3[Ticket]
 
+%% ================= RAG =================
 C --> I[RAG Service]
 
 I --> I1[Retriever]
@@ -139,23 +192,39 @@ I1 --> I2[Embedding Provider]
 I2 --> I3[Local or Azure]
 
 I1 --> I4[Search Provider]
-
 I4 --> I5[Chroma Local]
 I4 --> I6[Azure AI Search Hybrid]
 
-I --> I7[LLM Service]
+%% ================= RESILIENCE (RAG) =================
+I --> R1[Retry and Timeout]
+R1 --> R2[Circuit Breaker]
 
+%% ================= LLM =================
 C --> J[LLM Service]
+I --> J
 
-J --> K[Provider Factory]
-K --> L[Ollama]
-K --> M[Azure OpenAI]
+%% ================= LLM INTERNAL =================
+J --> J1[Retry and Timeout]
+J1 --> J2[Azure OpenAI Primary]
+J2 -->|failure| J3[Local LLM Fallback]
 
+%% ================= SECRETS =================
+J --> S[Secret Provider]
+S --> S1[Env Local]
+S --> S2[Azure Key Vault]
+
+I --> S
+
+%% ================= MEMORY =================
 C --> N[Memory]
 
+%% ================= STREAM =================
 C --> O[Streaming Layer]
-
 O --> P[Client]
+
+%% ================= FINAL =================
+J --> Z
+R2 --> J
 ```
 
 ---
@@ -357,17 +426,21 @@ Grounded response
 
 Configuration
 
-.env
+.env (control only — no secrets)
 
-LLM_PROVIDER=local
-EMBEDDING_PROVIDER=azure
+```text
+LLM_PROVIDER=local | azure
+EMBEDDING_PROVIDER=local | azure
+SEARCH_PROVIDER=local | azure
 
-AZURE_OPENAI_API_KEY=xxx
-AZURE_OPENAI_ENDPOINT=https://your-endpoint.openai.azure.com/
+SECRET_PROVIDER=env | keyvault
+AZURE_KEY_VAULT_URL=https://<vault>.vault.azure.net/
+```
 
-AZURE_OPENAI_DEPLOYMENT=gpt-4o-mini
-AZURE_EMBEDDING_DEPLOYMENT=text-embedding-3-small
+Note:
 
+- Azure secrets must NOT be stored in `.env`
+- All secrets are fetched from Azure Key Vault in production mode
 
 ---
 
@@ -609,11 +682,14 @@ Reliability	Depends on hardware	Managed
 Layer	Status
 Orchestrator	Stable
 Tool Execution	Stable
-LLM Control	Stable
+LLM Control	Stable (with fallback)
 Embeddings	Hybrid
 RAG	Active
-Evaluation	Valid
-Azure Integration	Active (LLM + Embeddings + Search)
+Evaluation	Valid (100% pass)
+Azure Integration	Complete
+Security	Key Vault integrated
+Resilience	Retry + Timeout + Circuit Breaker active
+Caching	Response cache active
 
 ---
 
@@ -633,117 +709,46 @@ Higher latency + cost vs improved accuracy.
 
 ---
 
-## Next Phase — System Hardening
+## System Hardening (Implemented)
 
-Shift from feature integration → production reliability.
+### Caching
 
-### 1. Caching Layer
+- Response-level caching
+- Avoids repeated execution for identical queries
 
-Add:
-• Embedding cache (avoid recomputation)
-• Retrieval cache (repeat queries)
-• Response cache (LLM output)
+### Retry
 
-Where:
-• Before embedding generation
-• Before Azure Search call
-• Before LLM call
+- Exponential backoff for Azure calls
+- Handles transient failures
 
----
+### Timeout
 
-### 2. Resilience + Fallback
+- Prevents long-running requests
+- Ensures system responsiveness
 
-Implement:
+### Circuit Breaker
 
-• Retry logic (Azure calls)
-• Timeout control
-• Circuit breaker
+- Opens on repeated failures
+- Prevents cascading outages
 
-Critical:
+### Fallback
 
-If Azure fails:
-→ fallback to local providers
-
-Example:
-
-Azure Search → fallback to Chroma
-Azure LLM → fallback to Ollama
+- Azure → Local fallback (LLM)
+- System remains operational during outages
 
 ---
 
-### 3. Observability
+## Key Insight (Production Behavior)
 
-Track:
+Observed behavior:
 
-• Latency per component
-• Token usage (LLM + embeddings)
-• Retrieval time (Azure vs local)
-• Failure rate
+- Tool execution → dominant (~90%)
+- RAG usage → selective (~10%)
 
-Goal:
-Make system measurable, not assumed.
+Implication:
 
----
-
-### 4. Hybrid Retrieval Tuning
-
-Control:
-
-• Vector vs keyword weighting
-• Top-K per query type
-• Metadata filtering (source, section)
-
-Goal:
-Improve precision without increasing cost.
-
----
-
-### 5. Indexing Strategy
-
-Move from:
-
-Manual reindex
-
-To:
-
-• Incremental indexing
-• Background ingestion
-• Document versioning
-
----
-
-### 6. Production Storage
-
-Replace:
-
-Local files
-
-With:
-
-• Azure Blob Storage (documents)
-• Persisted logs + transcripts
-
----
-
-### 7. Security Hardening
-
-Add:
-
-• Key Vault for secrets
-• Rate limiting (API)
-• Abuse protection
-
----
-
-## End State
-
-System becomes:
-
-• Cloud-backed
-• Fault-tolerant
-• Observable
-• Cost-aware
-• Production-ready at scale
+- System reliability depends more on orchestration than LLM quality
+- Resilience mechanisms are critical for real-world deployment
 
 ---
 
