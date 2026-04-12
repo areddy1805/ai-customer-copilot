@@ -94,6 +94,12 @@ class Orchestrator:
         trace_id = str(uuid.uuid4())
         state.metadata["trace_id"] = trace_id
 
+        cache_key = f"{session_id}:{user_query}"
+
+        cached = self.cache.get(cache_key)
+        if cached:
+            return _exit(cached)
+
         def _to_str(resp):
             if isinstance(resp, str):
                 return resp
@@ -429,6 +435,7 @@ class Orchestrator:
             self.memory.add_message(session_id, "assistant", response)
 
             if response.strip():
+                self.cache.set(cache_key, response)
                 return _exit(response, clear_session=True)
             else:
                 return _exit("Something went wrong.")
