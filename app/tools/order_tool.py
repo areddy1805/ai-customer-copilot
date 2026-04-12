@@ -1,6 +1,7 @@
 import json
 from typing import Dict, Any
 from app.tools.schemas import OrderStatusInput, ToolResponse
+from app.core.errors import ErrorCode
 
 
 class OrderTool:
@@ -25,7 +26,13 @@ class OrderTool:
                 if order["order_id"] == validated.order_id:
                     return ToolResponse(success=True, data=order)
 
-            return ToolResponse(success=False, error="Order not found")
+            return ToolResponse(
+                success=False,
+                error="Order not found",
+                error_code=ErrorCode.ORDER_NOT_FOUND,
+            )
 
         except Exception as e:
-            return ToolResponse(success=False, error=str(e))
+            return ToolResponse(
+                success=False, error=str(e), error_code=ErrorCode.UNKNOWN_ERROR
+            )

@@ -3,6 +3,7 @@ from datetime import datetime
 
 
 class Logger:
+
     def log_request(
         self,
         session_id: str,
@@ -10,7 +11,7 @@ class Logger:
         intent: str,
         route: str,
         plans: list,
-        tools_used: list,
+        execution_trace,
         latency_ms: int,
         status: str,
         error: str = None,
@@ -22,7 +23,7 @@ class Logger:
             "intent": intent,
             "route": route,
             "plans": plans or [],
-            "tools_used": tools_used or [],
+            "execution_trace": execution_trace,
             "latency_ms": latency_ms,
             "status": status,
             "error": error,

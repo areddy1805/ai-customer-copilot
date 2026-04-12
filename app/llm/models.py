@@ -6,7 +6,8 @@ class TaskType(str, Enum):
     GENERAL = "general"
     RAG = "rag"
     STRUCTURED = "structured"
-    TOOL_RESPONSE = "tool_response"
+    TOOL_RESPONSE = ("tool_response",)
+    RECOVERY = "recovery"
 
 
 MODEL_MAPPING = {
@@ -14,6 +15,7 @@ MODEL_MAPPING = {
     TaskType.RAG: "mistral:7b-instruct",
     TaskType.STRUCTURED: "qwen2.5:3b",
     TaskType.TOOL_RESPONSE: "phi3:mini",
+    TaskType.RECOVERY: "phi3:mini",
 }
 
 

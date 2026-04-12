@@ -1,4 +1,4 @@
-from app.agent.schemas import Plan
+from app.orchestrator.plan_schema import Plan, Step
 
 ALLOWED_TOOLS = {"get_order", "refund", "create_ticket"}
 ALLOWED_ACTIONS = {"tool", "rag", "respond"}

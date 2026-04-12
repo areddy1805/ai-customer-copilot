@@ -1,6 +1,7 @@
 import json
 from typing import Dict, Any
 from app.tools.schemas import RefundRequestInput, ToolResponse
+from app.core.errors import ErrorCode
 
 
 class RefundTool:
@@ -19,10 +20,6 @@ class RefundTool:
             return json.load(f)
 
     def process_refund(self, input_data: Dict[str, Any]) -> ToolResponse:
-        """
-        Process refund using real data relationships:
-        orders + payments + refunds
-        """
         try:
             validated = RefundRequestInput(**input_data)
 
@@ -35,9 +32,14 @@ class RefundTool:
             )
 
             if not order:
-                return ToolResponse(success=False, error="Order not found")
+                return ToolResponse(
+                    success=False,
+                    error="Order not found",
+                    data={"order_id": validated.order_id},
+                    error_code=ErrorCode.ORDER_NOT_FOUND,
+                )
 
-            # -------- EXISTING REFUND (FIX) --------
+            # -------- EXISTING REFUND --------
             existing_refund = next(
                 (r for r in refunds if r["order_id"] == validated.order_id), None
             )
@@ -50,7 +52,6 @@ class RefundTool:
                         "status": existing_refund["status"],
                         "amount": existing_refund["amount"],
                         "mode": existing_refund["mode"],
-                        "_type": "refund",
                     },
                 )
 
@@ -59,6 +60,8 @@ class RefundTool:
                 return ToolResponse(
                     success=False,
                     error="Refund not allowed: Order not delivered",
+                    data={"order_id": validated.order_id},
+                    error_code=ErrorCode.REFUND_NOT_ALLOWED,
                 )
 
             payment = next(
@@ -66,14 +69,18 @@ class RefundTool:
             )
 
             if not payment:
-                return ToolResponse(success=False, error="Payment record not found")
+                return ToolResponse(
+                    success=False,
+                    error="Payment record not found",
+                    data={"order_id": validated.order_id},
+                    error_code=ErrorCode.PAYMENT_NOT_FOUND,
+                )
 
             # -------- REFUND MODE --------
             refund_mode = (
                 "original_method" if payment["method"] == "prepaid" else "wallet"
             )
 
-            # -------- CREATE REFUND --------
             refund_data = {
                 "order_id": validated.order_id,
                 "status": "initiated",
@@ -81,7 +88,24 @@ class RefundTool:
                 "mode": refund_mode,
             }
 
-            return ToolResponse(success=True, data=refund_data)
+            # -------- OPTIONAL: PERSIST --------
+            refunds.append(refund_data)
+            self._save_json(self.refunds_path, refunds)
+
+            return ToolResponse(
+                success=True,
+                data={
+                    "order_id": validated.order_id,
+                    "status": "initiated",
+                    "amount": order["amount"],
+                    "mode": refund_mode,
+                },
+            )
 
         except Exception as e:
-            return ToolResponse(success=False, error=str(e))
+            return ToolResponse(
+                success=False,
+                error=str(e),
+                data={"order_id": input_data.get("order_id")},
+                error_code=ErrorCode.UNKNOWN_ERROR,
+            )

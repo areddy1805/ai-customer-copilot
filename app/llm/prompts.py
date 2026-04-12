@@ -68,5 +68,16 @@ def build_prompt(task: TaskType, query: str, context: str = "") -> str:
                 Answer:
                 """.strip()
 
-    else:
-        raise ValueError(f"Unsupported task type: {task}")
+    elif task == TaskType.RECOVERY:
+        return f"""
+  Explain briefly why the request failed.
+
+  Rules:
+  - Max 2 sentences
+  - No assumptions
+  - No extra suggestions
+  - Use only given failure data
+
+  Failures:
+  {context}
+  """

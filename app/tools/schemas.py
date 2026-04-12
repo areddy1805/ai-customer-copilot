@@ -1,5 +1,6 @@
 from pydantic import BaseModel, Field
 from typing import Optional, Dict, Any
+from app.core.errors import ErrorCode
 
 
 # ---------------------------
@@ -11,6 +12,7 @@ class ToolResponse(BaseModel):
     success: bool
     data: Optional[Dict[str, Any]] = None
     error: Optional[str] = None
+    error_code: Optional[ErrorCode] = None
 
 
 # ---------------------------

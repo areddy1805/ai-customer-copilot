@@ -28,16 +28,16 @@ from app.guard.response_validator import ResponseValidator
 from app.rag.embedder import Embedder
 from app.cache.semantic_cache import SemanticCache
 from app.orchestrator.planner import Planner
-from app.orchestrator.plan import Plan, Step
+from app.orchestrator.plan_schema import Plan, Step
 from app.orchestrator.executor import Executor
 from app.orchestrator.plan_validator import PlanValidator
-from app.orchestrator.decomposer import Decomposer
+from app.orchestrator.decomposer import TaskDecomposer
 
 from app.core.error_mapper import ErrorMapper
 
 from app.agent.planner import AgentPlanner
 from app.agent.validator import PlanValidator as AgentPlanValidator
-from app.agent.schemas import Plan as AgentPlan
+from app.core.error_map import map_error_message
 
 
 class Orchestrator:
@@ -75,7 +75,7 @@ class Orchestrator:
         self.executor = executor
 
         self.plan_validator = PlanValidator()
-        self.decomposer = Decomposer()
+        self.decomposer = TaskDecomposer()
 
         self.agent_planner = AgentPlanner()
         self.agent_validator = AgentPlanValidator()
@@ -91,8 +91,11 @@ class Orchestrator:
         self.metrics.inc("requests_total")
         start_time = time.time()
         state = ConversationState(user_query=user_query)
+
         trace_id = str(uuid.uuid4())
         state.metadata["trace_id"] = trace_id
+
+        all_results = []
 
         def _to_str(resp):
             if isinstance(resp, str):
@@ -127,13 +130,15 @@ class Orchestrator:
 
             mapped_error = ErrorMapper.map(error) if error else None
 
+            state.metadata["execution_trace"] = all_results
+
             self.logger.log_request(
                 session_id=session_id,
                 user_query=user_query,
                 intent=state.intent,
                 route=state.metadata.get("route"),
                 plans=state.metadata.get("plans"),
-                tools_used=self._extract_tools(state.metadata.get("plans")),
+                execution_trace=all_results,
                 latency_ms=latency,
                 status=status,
                 error=mapped_error,
@@ -156,11 +161,7 @@ class Orchestrator:
             # -------- GUARD --------
             guard = self.guard.evaluate(user_query, "unknown")
             if not guard["allowed"]:
-                return _exit(
-                    "Your request cannot be processed due to security or validation constraints.",
-                    "failure",
-                    "guard_block",
-                )
+                return _exit("Request blocked due to policy.", "failure", "guard_block")
 
             # -------- HUMAN --------
             if any(
@@ -181,160 +182,198 @@ class Orchestrator:
                     "user_requested_human",
                 )
 
-            # -------- SLOT RESOLUTION --------
-            pending = self.session_state.get(session_id)
-            if pending:
-                order_id = self._extract_order_id(user_query)
-                if order_id:
-                    user_query = f"{pending['intent']} {order_id}"
-                    intent = pending["intent"]
-                else:
-                    return _exit("Please provide a valid order ID.", "failure")
-            else:
-                intent = self.classifier.classify(user_query)
+            # -------- QUERY DECOMPOSER --------
+            tasks = self.decomposer.decompose(user_query)
 
-            q_lower = user_query.lower()
+            if not tasks:
+                return _exit("Unable to understand request.", "failure")
 
-            if not pending:
-                if "refund" in q_lower:
-                    intent = "refund_request"
-                elif "order" in q_lower or "track" in q_lower:
-                    intent = "order_status"
-                elif "ticket" in q_lower or "issue" in q_lower:
-                    intent = "create_ticket"
+            state.intent = "multi_intent"
+            self.metrics.inc("intent_multi_intent")
+            state.metadata["route"] = "tool"
 
-            state.intent = intent
-            self.metrics.inc(f"intent_{intent}")
-
-            state.metadata["route"] = "rag" if intent == "refund_policy" else "tool"
-
-            if intent == "general" and not pending:
-                return _exit(
-                    "I can help with order tracking, refunds, or delivery issues."
-                )
-
-            parts = [p.strip() for p in user_query.split(" and ") if p.strip()]
-
-            rag_response = None
-            tool_parts = []
-
-            for part in parts:
-                if "refund policy" in part.lower():
-                    rag_response = _to_str(self.query(part))
-                else:
-                    tool_parts.append(part)
-
-            order_id = self._extract_order_id(user_query)
-            if (
-                intent
-                in ["order_status", "refund_request", "create_ticket", "delivery_issue"]
-                and not order_id
-            ):
-                if not self.session_state.get(session_id):
-                    self.session_state[session_id] = {"intent": intent}
-
-                msg = {
-                    "order_status": "Please provide your order ID to check order status.",
-                    "refund_request": "Please provide your order ID to process refund request.",
-                }.get(intent, "Please provide your order ID to create a ticket.")
-
-                return _exit(msg)
-
-            memory_context = self._get_memory_context(session_id)
-
-            all_results = []
-            state.metadata["plans"] = []
-
-            def _run_task(task):
+            # -------- PLAN --------
+            try:
+                plan = self._get_deterministic_plan(tasks)
 
                 if self.agent_enabled:
                     try:
-                        agent_plan = self.agent_planner.create_plan(
-                            user_query=task,
-                            context={"memory": memory_context, "intent": intent},
+                        optimized_plan = self.agent_planner.optimize(plan, tasks)
+
+                        self.agent_validator.validate(optimized_plan)
+
+                        plan = optimized_plan
+
+                    except Exception:
+                        pass
+                else:
+                    raise ValueError("Agent disabled")
+
+            except Exception:
+                plan = self._get_deterministic_plan(tasks)
+                self.metrics.inc("plan_fallback")
+
+            try:
+                plan.trace_id = trace_id
+            except Exception:
+                pass
+
+            self.metrics.inc("steps_total", len(plan.steps))
+
+            state.metadata["plans"] = [
+                [
+                    {
+                        "step_id": s.step_id,
+                        "tool": s.tool_name,
+                        "depends_on": s.depends_on,
+                    }
+                    for s in plan.steps
+                    if s.action == "tool"
+                ]
+            ]
+
+            # -------- EXECUTION --------
+            def _run_async(coro):
+                try:
+                    loop = asyncio.get_event_loop()
+                    if loop.is_running():
+                        return asyncio.ensure_future(coro)
+                except RuntimeError:
+                    pass
+                return asyncio.run(coro)
+
+            result = _run_async(self.executor.execute_dag(plan))
+
+            if asyncio.isfuture(result):
+                result = asyncio.get_event_loop().run_until_complete(result)
+
+            if hasattr(result, "data"):
+                result = result.data
+
+            if isinstance(result, dict) and "steps" in result:
+                for step in result["steps"]:
+                    if "_tool" in step:
+                        self.metrics.observe(
+                            f"tool_{step['_tool']}_latency",
+                            step.get("_latency_ms", 0),
                         )
+                    all_results.append(step)
 
-                        self.agent_validator.validate(agent_plan)
+            # enforce deterministic order
+            all_results = sorted(all_results, key=lambda x: x.get("_step_id", 0))
 
-                        state.metadata["plans"].append(
-                            [
-                                s.tool_name if s.action == "tool" else s.action
-                                for s in agent_plan.steps
-                            ]
-                        )
-
-                        # === FIX: USE NEW EXECUTOR ===
-                        result = self.executor.execute(agent_plan)
-                        return result
-
-                    except Exception as e:
-                        print("AGENT FAILURE:", str(e))
-
-                plan = self._get_deterministic_plan(intent, task)
-                state.metadata["plans"].append([step.action for step in plan.steps])
-
-                # === FIX: REMOVE ASYNC EXECUTOR ===
-                return self.executor.execute(plan)
-
-            results = [_run_task(t) for t in (tool_parts or [user_query])]
-
-            for res in results:
-
-                if res is None:
-                    continue
-
-                if hasattr(res, "success") and hasattr(res, "data"):
-                    res = res.data
-
-                if isinstance(res, dict) and "steps" in res:
-                    for step in res["steps"]:
-                        if "_tool" in step:
-                            self.metrics.observe(
-                                f"tool_{step['_tool']}_latency",
-                                step.get("_latency_ms", 0),
-                            )
-                        all_results.append(step)
-
-                elif isinstance(res, dict):
-                    all_results.append(res)
-
-            print("ALL RESULTS:", all_results)
-
+            # -------- RESPONSE BUILD --------
             responses = []
+            seen = set()
+            grouped = {}
 
+            # -------- GROUP BY ORDER --------
             for data in all_results:
-
                 if not isinstance(data, dict):
                     continue
 
-                tool = data.get("_tool")
+                oid = data.get("order_id")
+                if not oid:
+                    continue
 
-                # === FIX: TOOL NAME ALIGNMENT ===
-                if tool == "get_order":
-                    responses.append(
-                        f"Your order {data.get('order_id')} is {data.get('status')} and expected by {data.get('delivery_eta')}."
-                    )
+                grouped.setdefault(oid, []).append(data)
 
-                elif tool == "refund":
-                    if data.get("error"):
-                        responses.append(data.get("error"))
+            # -------- BUILD DETERMINISTIC RESPONSE --------
+            from app.core.errors import ErrorCode
+
+            for oid, events in grouped.items():
+
+                for data in events:
+                    tool = data.get("_tool")
+                    code = data.get("error_code")
+
+                    # -------- ORDER --------
+                    if tool == "get_order":
+
+                        if code == ErrorCode.DEPENDENCY_FAILED:
+                            continue
+
+                        if code == ErrorCode.ORDER_NOT_FOUND:
+                            msg = f"Order {oid}: Order not found"
+
+                        elif code:
+                            msg = f"Order {oid}: Unable to fetch order details"
+
+                        else:
+                            msg = f"Your order {oid} is {data.get('status')} and expected by {data.get('delivery_eta')}."
+
+                    # -------- REFUND --------
+                    elif tool == "refund":
+
+                        if code == ErrorCode.DEPENDENCY_FAILED:
+                            continue
+
+                        if code == ErrorCode.ORDER_NOT_FOUND:
+                            msg = f"Order {oid}: Order not found"
+
+                        elif code == ErrorCode.REFUND_NOT_ALLOWED:
+                            msg = f"Order {oid}: Refund cannot be processed until delivery is complete"
+
+                        elif code == ErrorCode.PAYMENT_NOT_FOUND:
+                            msg = f"Order {oid}: Payment record not found"
+
+                        elif code:
+                            msg = f"Order {oid}: Refund failed"
+
+                        else:
+                            msg = f"Order {oid}: Refund {data.get('status')}"
+
+                    # -------- TICKET --------
+                    elif tool == "create_ticket":
+
+                        if code:
+                            msg = f"Order {oid}: Unable to create support ticket"
+                        else:
+                            msg = f"Ticket {data.get('ticket_id')} for order {oid} is {data.get('status')}."
+
+                    # -------- RAG --------
+                    elif "response" in data:
+                        msg = data["response"]
+
                     else:
-                        responses.append(
-                            f"Refund status for order {data.get('order_id')} is {data.get('status')}."
-                        )
+                        continue
 
-                elif tool == "create_ticket":
-                    responses.append(
-                        f"Ticket {data.get('ticket_id')} for order {data.get('order_id')} is currently {data.get('status')}."
+                    if msg not in seen:
+                        seen.add(msg)
+                        responses.append(msg)
+
+            # -------- LLM RECOVERY (STRICT + LIGHTWEIGHT) --------
+            known_errors = {
+                "Refund not allowed: Order not delivered",
+                "Order not found",
+            }
+
+            failed = [
+                {
+                    "order_id": d.get("order_id"),
+                    "error": d.get("error"),
+                }
+                for d in all_results
+                if isinstance(d, dict)
+                and d.get("_status") == "failed"
+                and d.get("error") not in known_errors
+            ]
+
+            if failed and len(failed) <= 1:  # HARD LIMIT
+                try:
+                    llm_response = self.llm.generate(
+                        task=TaskType.RECOVERY, query=user_query, context=str(failed)
                     )
 
-                elif "response" in data:
-                    responses.append(data["response"])
+                    if llm_response:
+                        responses.append(f"\nNote: {llm_response.strip()}")
 
+                except Exception:
+                    pass
+
+            # -------- FINAL --------
             response = (
-                "Unable to process request. Please try again."
-                if not responses
-                else " ".join(responses)
+                "\n".join(responses) if responses else "Unable to process request."
             )
 
             self.memory.add_message(session_id, "user", user_query)
@@ -345,150 +384,17 @@ class Orchestrator:
         finally:
             pass
 
-    # ================= STREAM =================
+    # ---------------- STREAM ----------------
     def run_stream(self, user_query: str, session_id: str):
-
         state = self.run(user_query, session_id)
-        response = state.final_response or ""
-
-        for token in response.split(" "):
+        for token in (state.final_response or "").split(" "):
             yield token + " "
-            time.sleep(0.02)
+            # time.sleep(0.02)
 
-    # ================= HELPERS =================
-
-    def _execute_agent_plan(self, agent_plan: AgentPlan):
-
-        from app.orchestrator.plan import Plan, Step
-
-        tool_map = {
-            "get_order": "order",
-            "refund": "refund",
-            "create_ticket": "ticket",
-        }
-
-        steps = []
-
-        # ===== BUILD DETERMINISTIC PLAN =====
-        for s in agent_plan.steps:
-
-            if s.action != "tool":
-                continue
-
-            mapped_tool = tool_map.get(s.tool_name)
-
-            if not mapped_tool:
-                raise ValueError(f"Invalid tool mapping: {s.tool_name}")
-
-            params = s.input or {}
-
-            # CRITICAL: enforce order_id for refund
-            if mapped_tool == "refund" and "order_id" not in params:
-                raise ValueError("Refund step missing order_id")
-
-            steps.append(Step(mapped_tool, params))
-
-        # ===== NO EXECUTABLE STEPS =====
-        if not steps:
-            return {"steps": [{"response": "No executable steps"}]}
-
-        # ===== EXECUTE USING EXISTING ENGINE =====
-        result = self.executor.execute(plan)
-
-        final_steps = []
-
-        if not result:
-            return {"steps": [{"response": "Execution failed"}]}
-
-        data = result.data or {}
-
-        # ===== NORMAL SUCCESS PATH =====
-        if result.success:
-
-            if "steps" in data:
-                final_steps.extend(data["steps"])
-            else:
-                final_steps.append(data)
-
-        # ===== FAILURE PATH (PARTIAL SAFE) =====
-        else:
-
-            # convert failure into structured step
-            final_steps.append(
-                {
-                    "_tool": steps[-1].action if steps else "unknown",
-                    "error": result.error or "Execution failed",
-                }
-            )
-
-        # ===== ENSURE STRUCTURE =====
-        normalized = []
-
-        for s in final_steps:
-            if isinstance(s, dict):
-                if "_tool" not in s:
-                    continue
-                normalized.append(s)
-
-        return {"steps": normalized}
-
-    def _build_agent_response(self, results):
-
-        # ===== NO TRANSFORMATION =====
-        # results already contain normalized tool outputs
-        # preserve structure for orchestrator response builder
-
-        steps = []
-
-        for r in results.values():
-
-            if not isinstance(r, dict):
-                continue
-
-            steps.append(r)
-
-        return {"steps": steps}
-
-    def _extract_tools(self, plans):
-        tools = set()
-
-        if not plans:
-            return []
-
-        for plan in plans:
-            for step in plan:
-
-                if not step:
-                    continue
-
-                # ===== AGENT PLAN (dict format) =====
-                if isinstance(step, dict):
-                    if step.get("action") != "tool":
-                        continue
-
-                    tool_name = step.get("tool")
-                    if tool_name:
-                        tools.add(tool_name)
-
-                # ===== LEGACY PLAN (string format) =====
-                elif isinstance(step, str):
-                    if step in ["respond", "rag"]:
-                        continue
-
-                    # handles "order({...})" or similar repr
-                    tool = step.split("(")[0]
-                    tools.add(tool)
-
-        return list(tools)
-
+    # ---------------- HELPERS ----------------
     def _extract_order_id(self, query: str):
         match = re.search(r"ORD0*(\d+)", query.upper())
-        if match:
-            return f"ORD{int(match.group(1))}"
-        return None
-
-    def _format_history(self, history):
-        return "\n".join(f"{m['role'].capitalize()}: {m['content']}" for m in history)
+        return f"ORD{int(match.group(1))}" if match else None
 
     def _escalate(self, session_id, user_query, intent, reason):
         self.escalation.push(
@@ -498,161 +404,135 @@ class Orchestrator:
             reason=reason,
         )
 
-    def _normalize(self, query: str):
-        return query.strip().lower()
+    def _get_deterministic_plan(self, tasks):
 
-    def _get_deterministic_plan(self, intent, user_query):
+        from app.orchestrator.plan_schema import Plan, Step
 
-        if intent == "order_status":
-            order_id = self._extract_order_id(user_query)
+        steps = []
+        step_id = 1
 
-            if not order_id:
-                return Plan(
-                    [Step("ask_order_id", {"query": user_query})],
-                    query=user_query,
+        for task in tasks:
+            intent = task["intent"]
+            oid = task["order_id"]
+
+            # -------- ORDER --------
+            if intent == "order_status":
+                steps.append(Step(step_id, "tool", "get_order", {"order_id": oid}, []))
+                step_id += 1
+
+            # -------- REFUND --------
+            elif intent == "refund_request":
+
+                get_id = step_id
+
+                steps.append(Step(get_id, "tool", "get_order", {"order_id": oid}, []))
+                step_id += 1
+
+                steps.append(
+                    Step(
+                        step_id,
+                        "tool",
+                        "refund",
+                        {"order_id": oid},
+                        [get_id],
+                    )
                 )
+                step_id += 1
 
-            return Plan(
-                [Step("order", {"order_id": order_id})],
-                query=user_query,
-            )
+            # -------- TICKET --------
+            elif intent == "create_ticket":
 
-        if intent == "refund_policy":
-            return Plan(
-                [Step("rag", {"query": user_query})],
-                query=user_query,
-            )
+                get_id = step_id
 
-        if intent == "refund_request":
-            order_id = self._extract_order_id(user_query)
+                steps.append(Step(get_id, "tool", "get_order", {"order_id": oid}, []))
+                step_id += 1
 
-            if not order_id:
-                return Plan(
-                    [Step("ask_order_id", {"query": user_query})],
-                    query=user_query,
+                steps.append(
+                    Step(
+                        step_id,
+                        "tool",
+                        "create_ticket",
+                        {"order_id": oid, "issue": "delivery_issue"},
+                        [get_id],
+                    )
                 )
+                step_id += 1
 
-            return Plan(
-                [
-                    Step("order", {"order_id": order_id}),
-                    Step("refund", {"order_id": order_id}),  # FIXED
-                ],
-                query=user_query,
-            )
-
-        if intent in ["delivery_issue", "create_ticket"]:
-            order_id = self._extract_order_id(user_query)
-
-            if not order_id:
-                return Plan(
-                    [Step("ask_order_id", {"query": user_query})],
-                    query=user_query,
+            # -------- FALLBACK --------
+            else:
+                steps.append(
+                    Step(step_id, "tool", "fallback_rag", {"query": str(task)}, [])
                 )
+                step_id += 1
 
-            return Plan(
-                [
-                    Step("order", {"order_id": order_id}),
-                    Step("ticket", {}),
-                ],
-                query=user_query,
-            )
-
-        plan = self.planner.create_plan(intent, user_query)
-        plan, _ = self.plan_validator.validate(plan)
-
-        if not plan:
-            return Plan(
-                [Step("rag", {"query": user_query})],
-                query=user_query,
-            )
-
-        return plan
-
-    def _replan_on_failure(self, intent, user_query, reason, context=""):
-
-        self.metrics.inc("execution_replan")
-
-        feedback = f"Execution failed: {reason}"
-
-        plan = self.planner._llm_plan(
-            user_query,
-            feedback=feedback,
-            context=context,
-        )
-
-        plan, _ = self.plan_validator.validate(plan)
-
-        if not plan:
-            return Plan(
-                [Step("fallback_rag", {"query": user_query})],
-                query=user_query,
-            )
-
-        return plan
+        return Plan(steps, query=str(tasks))
 
     def _get_memory_context(self, session_id, limit=5):
-
         history = self.memory.get_history(session_id)
-
         if not history:
             return ""
-
-        recent = history[-limit:]
-
-        return "\n".join(f"{m['role']}: {m['content']}" for m in recent)
-
-    def _ask_order_id(self, query: str):
-        from app.orchestrator.executor import ToolResult
-
-        return ToolResult(
-            success=True,
-            data={"response": "Please provide your order ID to proceed."},
-        )
+        return "\n".join(f"{m['role']}: {m['content']}" for m in history[-limit:])
 
     def query(self, query: str):
         from app.orchestrator.executor import ToolResult
 
-        response = self.rag.generate(query)
+        return ToolResult(success=True, data={"response": self.rag.generate(query)})
 
-        return ToolResult(
-            success=True,
-            data={"response": response},
-        )
+    def _normalize_agent_plan(self, plan, query):
 
-    def _get_valid_plan(self, intent, user_query, context=""):
+        import re
+        from app.orchestrator.plan_schema import Plan, Step
 
-        # -------- FORCE PLANNER FOR ALL CASES --------
-        plan = self.planner.create_plan(intent, user_query, context)
+        if not plan or not plan.steps:
+            raise ValueError("Invalid agent plan")
 
-        # -------- BASIC SAFETY CHECK --------
-        if not plan or not getattr(plan, "steps", None):
-            return Plan(
-                [Step("rag", {"query": user_query})],
-                query=user_query,
-            )
+        order_ids = list(dict.fromkeys(re.findall(r"ORD\d+", query.upper())))
 
-        # -------- ENSURE EVERY STEP HAS PARAMS --------
-        valid_steps = []
+        steps = []
+        step_id = 1
 
-        for step in plan.steps:
-            if not step.action:
+        query_lower = query.lower()
+        parts = [p.strip() for p in query_lower.split("and") if p.strip()]
+
+        for oid in order_ids:
+
+            get_id = step_id
+            steps.append(Step(get_id, "tool", "get_order", {"order_id": oid}, []))
+            step_id += 1
+
+            is_refund = any(oid.lower() in part and "refund" in part for part in parts)
+
+            if is_refund:
+                steps.append(
+                    Step(
+                        step_id,
+                        "tool",
+                        "refund",
+                        {"order_id": oid},
+                        [get_id],
+                    )
+                )
+                step_id += 1
                 continue
 
-            params = step.params or {}
-
-            # enforce order_id if required
-            if step.action in ["order", "refund", "ticket"]:
-                if not params.get("order_id"):
-                    order_id = self._extract_order_id(user_query)
-                    if order_id:
-                        params["order_id"] = order_id
-
-            valid_steps.append(Step(step.action, params))
-
-        if not valid_steps:
-            return Plan(
-                [Step("rag", {"query": user_query})],
-                query=user_query,
+            is_ticket = any(
+                oid.lower() in part and ("ticket" in part or "issue" in part)
+                for part in parts
             )
 
-        return Plan(valid_steps, query=user_query)
+            if is_ticket:
+                steps.append(
+                    Step(
+                        step_id,
+                        "tool",
+                        "create_ticket",
+                        {"order_id": oid, "issue": "delivery_issue"},
+                        [get_id],
+                    )
+                )
+                step_id += 1
+
+        if not steps:
+            steps.append(Step(step_id, "tool", "fallback_rag", {"query": query}, []))
+
+        return Plan(steps, query=query)

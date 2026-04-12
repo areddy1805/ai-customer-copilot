@@ -1,30 +1,84 @@
-from app.orchestrator.plan import Plan, Step
-
-
-ALLOWED_ACTIONS = {
-    "get_order",
-    "check_refund_eligibility",
-    "process_refund",
-    "check_ticket",
-    "create_or_fetch_ticket",
-    "fallback_rag",
-}
+from app.orchestrator.plan_schema import Plan
 
 
 class PlanValidator:
 
     def validate(self, plan: Plan):
 
-        valid_steps = []
+        if not plan.steps:
+            return None, "Empty plan"
 
+        step_ids = set()
+
+        # -----------------------------
+        # BASIC STRUCTURE VALIDATION
+        # -----------------------------
         for step in plan.steps:
-            if step.action in ALLOWED_ACTIONS:
-                valid_steps.append(step)
 
-        if not valid_steps:
-            return None, "No valid steps"
+            # step_id must exist
+            if step.step_id is None:
+                return None, "Missing step_id"
 
-        if len(valid_steps) > 3:
+            # uniqueness
+            if step.step_id in step_ids:
+                return None, f"Duplicate step_id: {step.step_id}"
+
+            step_ids.add(step.step_id)
+
+            # action must be "tool" or "respond"
+            if step.action not in {"tool", "respond"}:
+                return None, f"Invalid action: {step.action}"
+
+            # tool steps must have tool_name
+            if step.action == "tool" and not step.tool_name:
+                return None, f"Missing tool_name in step {step.step_id}"
+
+        # -----------------------------
+        # DEPENDENCY VALIDATION
+        # -----------------------------
+        for step in plan.steps:
+
+            for dep in step.depends_on:
+
+                if dep not in step_ids:
+                    return None, f"Invalid dependency {dep} in step {step.step_id}"
+
+                if dep == step.step_id:
+                    return None, f"Self dependency in step {step.step_id}"
+
+        # -----------------------------
+        # CYCLE DETECTION (DFS)
+        # -----------------------------
+        graph = {step.step_id: step.depends_on for step in plan.steps}
+
+        visited = set()
+        visiting = set()
+
+        def dfs(node):
+            if node in visiting:
+                return True  # cycle
+
+            if node in visited:
+                return False
+
+            visiting.add(node)
+
+            for dep in graph.get(node, []):
+                if dfs(dep):
+                    return True
+
+            visiting.remove(node)
+            visited.add(node)
+            return False
+
+        for node in graph:
+            if dfs(node):
+                return None, "Cycle detected in plan"
+
+        # -----------------------------
+        # STEP LIMIT
+        # -----------------------------
+        if len(plan.steps) > 3:
             return None, "Too many steps"
 
-        return Plan(valid_steps, query=plan.query), None
+        return plan, None
