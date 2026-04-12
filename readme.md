@@ -240,50 +240,40 @@ Not:
 flowchart TD
 
 A[User] --> B[FastAPI]
-
 B --> C[Orchestrator]
 
 C --> D[Policy Guard]
-C --> E[Intent Parser (Rule-based)]
+C --> E[Intent Parser - Rule Based]
 C --> F[Memory Context]
-
 C --> G[Task Decomposer]
-
 G --> H[Planner / Agent Planner]
 
-I1 --> I4[Search Provider]
+C --> I[RAG Service]
+I --> I4[Search Provider]
 I4 --> I5[Chroma Local]
 I4 --> I6[Azure AI Search Hybrid]
 
-%% ================= RESILIENCE (RAG) =================
 I --> R1[Retry and Timeout]
 R1 --> R2[Circuit Breaker]
 
-%% ================= LLM =================
 C --> J[LLM Service]
 I --> J
 
-%% ================= LLM INTERNAL =================
 J --> J1[Retry and Timeout]
 J1 --> J2[Azure OpenAI Primary]
 J2 -->|failure| J3[Local LLM Fallback]
 
-%% ================= SECRETS =================
 J --> S[Secret Provider]
 S --> S1[Env Local]
 S --> S2[Azure Key Vault]
-
 I --> S
 
-%% ================= MEMORY =================
 C --> N[Memory]
 
-%% ================= STREAM =================
 C --> O[Streaming Layer]
 O --> P[Client]
 
-%% ================= FINAL =================
-J --> Z
+J --> Z[Response]
 R2 --> J
 ```
 
