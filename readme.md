@@ -59,6 +59,16 @@ It is a **controlled AI system** that:
 
 ---
 
+## Agentic Implementations
+
+| Mode | Description |
+|------|------------|
+| Core Agent (Custom) | Deterministic, production-grade planner-executor |
+| LangChain Adapter | Framework-based agent (demo only) |
+| AutoGen Adapter | Multi-agent simulation (experimental) |
+
+---
+
 ## Core Capabilities
 
 ### Deterministic Orchestration
