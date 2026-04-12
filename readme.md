@@ -1,14 +1,15 @@
-# AI Customer Support Copilot (Hybrid Azure + Local AI System)
+# AI Customer Support Copilot (Hybrid Deterministic AI System)
 
 ![Python](https://img.shields.io/badge/Python-3.9+-blue)
 ![FastAPI](https://img.shields.io/badge/FastAPI-Backend-green)
 ![LLM](https://img.shields.io/badge/LLM-Hybrid%20(Local%20%2B%20Azure)-orange)
-![RAG](https://img.shields.io/badge/RAG-Hybrid-blueviolet)
-![Streaming](https://img.shields.io/badge/Streaming-SSE-blue)
-![Status](https://img.shields.io/badge/Status-Production--Grade-brightgreen)
+![RAG](https://img.shields.io/badge/RAG-Azure%20AI%20Search%20%7C%20Local-blue)
+![Streaming](https://img.shields.io/badge/Streaming-SSE-blueviolet)
+![Orchestration](https://img.shields.io/badge/Execution-Deterministic-critical)
+![Status](https://img.shields.io/badge/Status-Production--Ready-brightgreen)
 ![License](https://img.shields.io/badge/License-MIT-lightgrey)
 
-Production-grade AI system for e-commerce customer support with **deterministic orchestration, hybrid LLM architecture, Azure-native integrations, and controlled RAG execution**.
+Production-grade AI system with **deterministic orchestration, tool-first execution, hybrid LLM (Local ↔ Azure), RAG (Azure AI Search / local), memory, and extensible planning layer (agentic WIP)**.
 
 ---
 
@@ -40,11 +41,49 @@ This is not a chatbot.
 
 This is a **controlled AI execution system** where:
 
-- LLMs assist, never control
-- Orchestrator owns all decisions
-- Tools execute business logic deterministically
-- RAG augments responses, not authority
-- Azure services are optional, pluggable components
+- Executes real actions (order tracking, refunds, tickets)
+- Uses structured planning instead of raw LLM replies
+- Maintains conversation memory
+- Grounds responses using knowledge base (RAG)
+- Supports structured multi-step execution (rule-based, agentic layer in progress)
+
+## Architecture Principles
+
+- LLM is stateless and does not control execution
+- Orchestrator owns all decision-making and tool invocation
+- RAG is assistive, not authoritative
+- Azure services are pluggable, not required
+- System supports hybrid execution (local ↔ cloud)
+
+## Azure Integration
+
+- Azure OpenAI (Responses API)
+- Azure AI Search (vector + hybrid retrieval)
+- Azure Embeddings
+- Azure Key Vault (planned)
+- Azure Blob Storage (planned)
+
+---
+
+## Branches
+
+| Branch | Description |
+|--------|------------|
+| main | Production-ready system (Hybrid Azure + Resilience + Adapter-ready, agentic in progress) |
+| release/v1-local | Deterministic local-only baseline (stable snapshot) |
+| feature/azure-migration | Introduces Azure OpenAI, embeddings, AI Search |
+| feature/agentic-framework | Adds deterministic agent planner + structured execution |
+| feature/framework-adapters | LangChain + AutoGen compatibility layer (non-core) |
+
+---
+
+## Agentic Implementations (WIP)
+
+| Mode | Description |
+|------|------------|
+| Core Agent (Custom) | Deterministic, production-grade planner-executor |
+| LangChain Adapter | Framework-based agent (demo only) |
+| AutoGen Adapter | Multi-agent simulation (experimental) |
 
 ---
 
@@ -57,7 +96,9 @@ Secrets are not stored in code or config.
 - Azure Key Vault (primary)
 - Env-based fallback (local development only)
 
-### Supported Secret Providers
+- Rule-based query decomposition (`AND`, `THEN`)
+- Sequential execution pipeline
+- Agentic planning layer will replace this with dynamic plan generation
 
 SECRET_PROVIDER=env | keyvault
 
@@ -157,6 +198,40 @@ Azure failure → automatic fallback to local
 
 Ensures system never fails due to external dependency.
 
+## Hybrid Execution Control
+
+System supports runtime switching:
+
+- LLM Provider → Local | Azure
+- Embeddings → Local | Azure
+- RAG Backend → Local | Azure AI Search
+
+All switches are configuration-driven. No code changes required.
+
+## System Positioning
+
+This system is designed as:
+
+- A deterministic alternative to LLM-first agents
+- A hybrid AI architecture (local + cloud)
+- A production-ready foundation for enterprise copilots
+
+Not:
+- a prompt-based chatbot
+- a framework-dependent agent
+
+## Execution Transparency
+
+- Every request produces an explicit execution path
+- Plans can be logged, inspected, and replayed
+- System behavior is debuggable at step level
+
+## Resilience & Failure Handling
+
+- Retry logic for tool execution
+- Fallback between Azure and local providers
+- Timeout and circuit breaker controls
+
 ---
 
 ## Architecture
@@ -168,28 +243,13 @@ A[User] --> B[FastAPI]
 
 B --> C[Orchestrator]
 
-%% ================= CORE =================
-C --> D[Classifier]
-C --> E[Decomposer]
-C --> F[Planner]
-C --> G[Executor]
+C --> D[Policy Guard]
+C --> E[Intent Parser (Rule-based)]
+C --> F[Memory Context]
 
-%% ================= CACHE =================
-C --> CA[Response Cache]
-CA -->|hit| Z[Return Response]
+C --> G[Task Decomposer]
 
-%% ================= TOOLS =================
-G --> H[Tools]
-H --> H1[Order]
-H --> H2[Refund]
-H --> H3[Ticket]
-
-%% ================= RAG =================
-C --> I[RAG Service]
-
-I --> I1[Retriever]
-I1 --> I2[Embedding Provider]
-I2 --> I3[Local or Azure]
+G --> H[Planner / Agent Planner]
 
 I1 --> I4[Search Provider]
 I4 --> I5[Chroma Local]
@@ -389,6 +449,12 @@ Every query is treated as:
 
 Query → Tasks → Plans → Execution
 
+### 5. Execution Guarantees
+
+- Every tool call is explicitly planned and validated
+- No implicit LLM-triggered actions
+- All execution paths are traceable and reproducible
+
 ---
 
 ## Example Flows
@@ -534,7 +600,7 @@ Custom evaluation framework validates:
 
 Run:
 
-```text
+```bash
 python -m app.eval.eval_runner
 ```
 
@@ -607,31 +673,35 @@ curl "http://localhost:8000/api/chat?query=Track%20ORD1%20and%20refund%20ORD2"
 
 ---
 
-Tech Stack
+## Tech Stack
 
-Backend
-	•	FastAPI
-	•	Python
+### Backend
+- FastAPI
+- Python
 
-LLM
-	•	Azure OpenAI
-	•	Ollama (phi3, mistral, llama3, qwen)
+### LLM Providers
+- Local (Ollama)
+- Azure OpenAI (Responses API)
 
-Retrieval (RAG)
-  • Chroma (local vector DB)
-  • Azure AI Search (hybrid retrieval: vector + keyword)
+### Retrieval (RAG)
+- Local (Chroma / FAISS)
+- Azure AI Search (vector + hybrid)
 
-Memory & State
-	•	In-memory session store (extensible to Redis)
+### Embeddings
+- Local models
+- Azure Embeddings
 
-Frontend
-	•	Vanilla JavaScript
-	•	HTML / CSS
-	•	Server-Sent Events (SSE) for streaming
+### Memory
+- In-memory (dev)
+- Redis (optional)
 
-Infrastructure (Optional)
-	•	Docker
-	•	Redis (for scaling memory/queues)
+### Frontend
+- Vanilla JavaScript (SSE streaming)
+
+### Infrastructure
+- Docker
+- Redis
+- Azure (OpenAI, AI Search, Key Vault, Blob - planned)
 
 ---
 
@@ -653,105 +723,30 @@ Infrastructure (Optional)
 | Production readiness   | Low	   | High        |
 
 
+## Framework Independence
+
+This system does not depend on agent frameworks (LangChain, AutoGen) for execution.
+
+- Core logic is implemented as deterministic system components
+- Frameworks are integrated only as optional adapters
+- Execution control remains fully within the orchestrator
+
 ---
 
-## Design Rules (Enforced)
-	•	LLM cannot execute tools
-	•	LLM cannot modify system state
-	•	Tools are pure functions
-	•	Orchestrator is the only decision layer
-	•	RAG is assistive, not authoritative
-	•	Azure is optional, not required
+### Future Improvements
+
+- Agentic planner (LLM-driven structured plan generation)
+- DAG-based execution engine (dependency-aware execution)
+- Tool-level caching and step reuse
+- Persistent memory (Redis / DB-backed sessions)
+- Distributed execution (queue-based workers)
+- Advanced observability (tracing, dashboards)
+- WebSocket streaming (replace SSE)
+- Authentication + multi-tenant isolation
 
 ---
 
 ## Tradeoffs
 
-Dimension	Local	Azure
-Latency	Low	Higher
-Cost	Zero	Per-token
-Control	Full	Limited
-Quality	Moderate	High
-Reliability	Depends on hardware	Managed
-
-
----
-
-## Current State
-
-Layer	Status
-Orchestrator	Stable
-Tool Execution	Stable
-LLM Control	Stable (with fallback)
-Embeddings	Hybrid
-RAG	Active
-Evaluation	Valid (100% pass)
-Azure Integration	Complete
-Security	Key Vault integrated
-Resilience	Retry + Timeout + Circuit Breaker active
-Caching	Response cache active
-
----
-
-## Hybrid Retrieval Architecture
-
-The system supports interchangeable retrieval backends:
-
-• Local (Chroma) → fast, vector-only
-• Azure AI Search → hybrid (vector + keyword)
-
-Key Insight:
-Azure improves recall and semantic matching in real-world queries,
-especially where keyword mismatch occurs.
-
-Tradeoff:
-Higher latency + cost vs improved accuracy.
-
----
-
-## System Hardening (Implemented)
-
-### Caching
-
-- Response-level caching
-- Avoids repeated execution for identical queries
-
-### Retry
-
-- Exponential backoff for Azure calls
-- Handles transient failures
-
-### Timeout
-
-- Prevents long-running requests
-- Ensures system responsiveness
-
-### Circuit Breaker
-
-- Opens on repeated failures
-- Prevents cascading outages
-
-### Fallback
-
-- Azure → Local fallback (LLM)
-- System remains operational during outages
-
----
-
-## Key Insight (Production Behavior)
-
-Observed behavior:
-
-- Tool execution → dominant (~90%)
-- RAG usage → selective (~10%)
-
-Implication:
-
-- System reliability depends more on orchestration than LLM quality
-- Resilience mechanisms are critical for real-world deployment
-
----
-
-License
-
 MIT License
+
