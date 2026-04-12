@@ -48,6 +48,17 @@ It is a **controlled AI system** that:
 
 ---
 
+## Branches
+
+| Branch | Description |
+|--------|------------|
+| main | Final hybrid system (Azure + Local + Resilience) |
+| feature/azure-migration | Step-by-step Azure integration |
+| feature/agentic-framework | Experimental agentic execution layer |
+| legacy/local-only | Original local-only implementation |
+
+---
+
 ## Core Capabilities
 
 ### Deterministic Orchestration
