@@ -21,7 +21,7 @@ class OllamaClient:
             "model": model,
             "prompt": prompt,
             "stream": stream,
-            "options": {"temperature": 0.2, "num_predict": 100},
+            "options": {"temperature": 0.2, "num_predict": 512},
         }
 
         try:

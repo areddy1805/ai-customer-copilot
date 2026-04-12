@@ -1,5 +1,9 @@
+import os
 import uuid
 import asyncio
+import re
+import time
+from app.core.config import settings
 from app.orchestrator.state import ConversationState
 from app.orchestrator.classifier import IntentClassifier
 from app.orchestrator.router import Router
@@ -31,9 +35,9 @@ from app.orchestrator.decomposer import Decomposer
 
 from app.core.error_mapper import ErrorMapper
 
-
-import re
-import time
+from app.agent.planner import AgentPlanner
+from app.agent.validator import PlanValidator as AgentPlanValidator
+from app.agent.schemas import Plan as AgentPlan
 
 
 class Orchestrator:
@@ -82,10 +86,16 @@ class Orchestrator:
         self.plan_validator = PlanValidator()
         self.decomposer = Decomposer()
 
+        self.agent_planner = AgentPlanner()
+        self.agent_validator = AgentPlanValidator()
+        self.agent_enabled = settings.agent_enabled
+
         self.semantic_cache.store = []
         self.session_state = {}
+        print("AGENT ENABLED:", self.agent_enabled)
 
     # ================= RUN =================
+
     def run(self, user_query: str, session_id: str) -> ConversationState:
         self.metrics.inc("requests_total")
         start_time = time.time()
@@ -186,7 +196,7 @@ class Orchestrator:
                 order_id = self._extract_order_id(user_query)
                 if order_id:
                     user_query = f"{pending['intent']} {order_id}"
-                    intent = pending["intent"]  # FORCE INTENT
+                    intent = pending["intent"]
                 else:
                     return _exit("Please provide a valid order ID.", "failure")
             else:
@@ -250,32 +260,34 @@ class Orchestrator:
             state.metadata["plans"] = []
 
             async def _run_task(task):
-                plan = self.planner.create_plan(intent, task, memory_context)
-                state.metadata["plans"].append([str(step) for step in plan.steps])
 
-                result = await self.executor.execute_parallel(plan)
+                if self.agent_enabled:
+                    try:
+                        agent_plan = self.agent_planner.create_plan(
+                            user_query=task,
+                            context={"memory": memory_context, "intent": intent},
+                        )
 
-                if not result or not result.success:
-                    error = (
-                        getattr(result, "error", "unknown_failure")
-                        if result
-                        else "no_result"
-                    )
+                        print(agent_plan)
+                        # MUST FAIL HERE IF INVALID
+                        self.agent_validator.validate(agent_plan)
 
-                    if error == "Order not found":
-                        return {
-                            "response": f"Order {order_id} not found. Please check your order ID."
-                        }
-                    elif "not delivered" in error.lower():
-                        return {
-                            "response": f"Refund status for order {order_id} is pending."
-                        }
-                    else:
-                        return "__ESCALATE__", intent, error
+                        state.metadata["plans"].append(
+                            [
+                                s.tool_name if s.action == "tool" else s.action
+                                for s in agent_plan.steps
+                            ]
+                        )
 
-                return result.data
+                        return await self._execute_agent_plan(agent_plan)
 
-            import asyncio
+                    except Exception as e:
+                        print("AGENT FAILURE:", str(e))
+
+                plan = self._get_deterministic_plan(intent, task)
+                state.metadata["plans"].append([step.action for step in plan.steps])
+
+                return await self.executor.execute_parallel(plan)
 
             async def run_all():
                 return await asyncio.gather(
@@ -285,6 +297,11 @@ class Orchestrator:
             results = asyncio.run(run_all())
 
             for res in results:
+
+                if res is None:
+                    continue
+
+                # ===== HANDLE ESCALATION =====
                 if isinstance(res, tuple) and res[0] == "__ESCALATE__":
                     _, t_intent, error = res
                     self._escalate(session_id, user_query, t_intent, error)
@@ -294,61 +311,66 @@ class Orchestrator:
                         error,
                     )
 
-                if "steps" in res:
+                # ===== NORMALIZE TOOLRESULT =====
+                if hasattr(res, "success") and hasattr(res, "data"):
+                    res = res.data
+
+                # ===== FLATTEN =====
+                if isinstance(res, dict) and "steps" in res:
                     for step in res["steps"]:
                         if "_tool" in step:
                             self.metrics.observe(
-                                f"tool_{step['_tool']}_latency", step["_latency_ms"]
+                                f"tool_{step['_tool']}_latency",
+                                step.get("_latency_ms", 0),
                             )
                         all_results.append(step)
-                else:
+
+                elif isinstance(res, dict):
                     all_results.append(res)
 
+            # -------- RESPONSE BUILD --------
             responses = []
 
-            if rag_response:
-                responses.append(rag_response)
+            print("ALL RESULTS:", all_results)
 
             for data in all_results:
-                tool = data.get("_tool")
 
-                if intent == "refund_request":
-                    if tool == "refund":
-                        responses.append(
-                            f"Refund status for order {data.get('order_id')} is {data.get('status')}."
-                        )
-                    elif tool == "order":
-                        # fallback if refund tool didn’t respond properly
-                        responses.append(
-                            f"Your order {data.get('order_id')} is {data.get('status')}."
-                        )
-                    elif "response" in data:
-                        responses.append(data["response"])
+                if not isinstance(data, dict):
                     continue
+
+                tool = data.get("_tool")
 
                 if tool == "order":
                     responses.append(
                         f"Your order {data.get('order_id')} is {data.get('status')} and expected by {data.get('delivery_eta')}."
                     )
-                elif "ticket_id" in data:
+
+                elif tool == "refund":
+
+                    if data.get("error"):
+                        responses.append(data.get("error"))
+                    else:
+                        responses.append(
+                            f"Refund status for order {data.get('order_id')} is {data.get('status')}."
+                        )
+
+                elif tool == "ticket":
                     responses.append(
                         f"Ticket {data.get('ticket_id')} for order {data.get('order_id')} is currently {data.get('status')}."
                     )
+
                 elif "response" in data:
                     responses.append(data["response"])
 
-            response = " ".join(responses)
-
             if not responses:
-                responses.append("Unable to process refund request. Please try again.")
+                response = "Unable to process request. Please try again."
+            else:
+                response = " ".join(responses)
 
             self.memory.add_message(session_id, "user", user_query)
             self.memory.add_message(session_id, "assistant", response)
 
-            if response.strip():
-                return _exit(response, clear_session=True)
-            else:
-                return _exit("Something went wrong.")
+            return _exit(response, clear_session=True)
 
         finally:
             pass
@@ -364,6 +386,99 @@ class Orchestrator:
             time.sleep(0.02)
 
     # ================= HELPERS =================
+
+    async def _execute_agent_plan(self, agent_plan: AgentPlan):
+
+        from app.orchestrator.plan import Plan, Step
+
+        tool_map = {
+            "get_order": "order",
+            "refund": "refund",
+            "create_ticket": "ticket",
+        }
+
+        steps = []
+
+        # ===== BUILD DETERMINISTIC PLAN =====
+        for s in agent_plan.steps:
+
+            if s.action != "tool":
+                continue
+
+            mapped_tool = tool_map.get(s.tool_name)
+
+            if not mapped_tool:
+                raise ValueError(f"Invalid tool mapping: {s.tool_name}")
+
+            params = s.input or {}
+
+            # CRITICAL: enforce order_id for refund
+            if mapped_tool == "refund" and "order_id" not in params:
+                raise ValueError("Refund step missing order_id")
+
+            steps.append(Step(mapped_tool, params))
+
+        # ===== NO EXECUTABLE STEPS =====
+        if not steps:
+            return {"steps": [{"response": "No executable steps"}]}
+
+        # ===== EXECUTE USING EXISTING ENGINE =====
+        result = await self.executor.execute_parallel(Plan(steps, query=""))
+
+        final_steps = []
+
+        if not result:
+            return {"steps": [{"response": "Execution failed"}]}
+
+        data = result.data or {}
+
+        # ===== NORMAL SUCCESS PATH =====
+        if result.success:
+
+            if "steps" in data:
+                final_steps.extend(data["steps"])
+            else:
+                final_steps.append(data)
+
+        # ===== FAILURE PATH (PARTIAL SAFE) =====
+        else:
+
+            # convert failure into structured step
+            final_steps.append(
+                {
+                    "_tool": steps[-1].action if steps else "unknown",
+                    "error": result.error or "Execution failed",
+                }
+            )
+
+        # ===== ENSURE STRUCTURE =====
+        normalized = []
+
+        for s in final_steps:
+            if isinstance(s, dict):
+                if "_tool" not in s:
+                    continue
+                normalized.append(s)
+
+        return {"steps": normalized}
+
+    def _build_agent_response(self, results):
+
+        # ===== NO TRANSFORMATION =====
+        # results already contain normalized tool outputs
+        # preserve structure for orchestrator response builder
+
+        steps = []
+
+        for r in results.values():
+
+            if not isinstance(r, dict):
+                continue
+
+            steps.append(r)
+
+        return {"steps": steps}
+
     def _extract_tools(self, plans):
         tools = set()
 
@@ -372,7 +487,25 @@ class Orchestrator:
 
         for plan in plans:
             for step in plan:
-                if "(" in step:
+
+                if not step:
+                    continue
+
+                # ===== AGENT PLAN (dict format) =====
+                if isinstance(step, dict):
+                    if step.get("action") != "tool":
+                        continue
+
+                    tool_name = step.get("tool")
+                    if tool_name:
+                        tools.add(tool_name)
+
+                # ===== LEGACY PLAN (string format) =====
+                elif isinstance(step, str):
+                    if step in ["respond", "rag"]:
+                        continue
+
+                    # handles "order({...})" or similar repr
                     tool = step.split("(")[0]
                     tools.add(tool)
 
@@ -432,7 +565,7 @@ class Orchestrator:
             return Plan(
                 [
                     Step("order", {"order_id": order_id}),
-                    Step("refund", {}),
+                    Step("refund", {"order_id": order_id}),  # FIXED
                 ],
                 query=user_query,
             )

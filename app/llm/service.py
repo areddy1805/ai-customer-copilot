@@ -39,3 +39,19 @@ class LLMService:
 
         except Exception:
             yield "Please provide more specific details."
+
+    def generate_raw(self, prompt: str) -> str:
+        try:
+            with self._lock:
+                response = self.client.generate(
+                    model=get_model_for_task(TaskType.GENERAL),
+                    prompt=prompt,
+                )
+
+            if not response or len(response.strip()) < 5:
+                raise ValueError("Empty response")
+
+            return response
+
+        except Exception:
+            raise

@@ -1,10 +1,18 @@
 class Step:
-    def __init__(self, action: str, params: dict):
+    def __init__(
+        self,
+        action: str,
+        params: dict = None,
+        step_id: int = None,
+        depends_on: list = None,
+    ):
         self.action = action
-        self.params = params
+        self.params = params or {}
+        self.step_id = step_id
+        self.depends_on = depends_on or []
 
     def __repr__(self):
-        return f"{self.action}({self.params})"
+        return f"{self.step_id}:{self.action}({self.params}) -> deps:{self.depends_on}"
 
 
 class Plan:
