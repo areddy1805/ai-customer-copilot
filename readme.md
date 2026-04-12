@@ -1,14 +1,15 @@
-# AI Customer Support Copilot
+# AI Customer Support Copilot (Hybrid Deterministic AI System)
 
 ![Python](https://img.shields.io/badge/Python-3.9+-blue)
 ![FastAPI](https://img.shields.io/badge/FastAPI-Backend-green)
-![LLM](https://img.shields.io/badge/LLM-Ollama-orange)
-![UI](https://img.shields.io/badge/UI-Vanilla%20JS-black)
+![LLM](https://img.shields.io/badge/LLM-Hybrid%20(Local%20%2B%20Azure)-orange)
+![RAG](https://img.shields.io/badge/RAG-Azure%20AI%20Search%20%7C%20Local-blue)
 ![Streaming](https://img.shields.io/badge/Streaming-SSE-blueviolet)
+![Orchestration](https://img.shields.io/badge/Execution-Deterministic-critical)
 ![Status](https://img.shields.io/badge/Status-Production--Ready-brightgreen)
 ![License](https://img.shields.io/badge/License-MIT-lightgrey)
 
-Production-grade AI system for e-commerce customer support with **deterministic orchestration, tool execution, memory, RAG grounding, streaming UI, and multi-intent reasoning**.
+Production-grade AI system with **deterministic orchestration, tool-first execution, hybrid LLM (Local ↔ Azure), RAG (Azure AI Search / local), memory, and extensible planning layer (agentic WIP)**.
 
 ---
 
@@ -44,7 +45,23 @@ It is a **controlled AI system** that:
 - Uses structured planning instead of raw LLM replies
 - Maintains conversation memory
 - Grounds responses using knowledge base (RAG)
-- Supports multi-intent queries deterministically
+- Supports structured multi-step execution (rule-based, agentic layer in progress)
+
+## Architecture Principles
+
+- LLM is stateless and does not control execution
+- Orchestrator owns all decision-making and tool invocation
+- RAG is assistive, not authoritative
+- Azure services are pluggable, not required
+- System supports hybrid execution (local ↔ cloud)
+
+## Azure Integration
+
+- Azure OpenAI (Responses API)
+- Azure AI Search (vector + hybrid retrieval)
+- Azure Embeddings
+- Azure Key Vault (planned)
+- Azure Blob Storage (planned)
 
 ---
 
@@ -52,7 +69,7 @@ It is a **controlled AI system** that:
 
 | Branch | Description |
 |--------|------------|
-| main | Production-ready system (Hybrid Azure + Agentic + Resilience + Adapters) |
+| main | Production-ready system (Hybrid Azure + Resilience + Adapter-ready, agentic in progress) |
 | release/v1-local | Deterministic local-only baseline (stable snapshot) |
 | feature/azure-migration | Introduces Azure OpenAI, embeddings, AI Search |
 | feature/agentic-framework | Adds deterministic agent planner + structured execution |
@@ -60,7 +77,7 @@ It is a **controlled AI system** that:
 
 ---
 
-## Agentic Implementations
+## Agentic Implementations (WIP)
 
 | Mode | Description |
 |------|------------|
@@ -80,9 +97,9 @@ It is a **controlled AI system** that:
 
 ### Multi-Intent Handling
 
-- Query decomposition (`AND`, `THEN`)
-- Sequential plan execution
-- Aggregated responses
+- Rule-based query decomposition (`AND`, `THEN`)
+- Sequential execution pipeline
+- Agentic planning layer will replace this with dynamic plan generation
 
 ### Tool Execution Layer
 
@@ -106,6 +123,40 @@ It is a **controlled AI system** that:
 - Input validation
 - Controlled escalation
 
+## Hybrid Execution Control
+
+System supports runtime switching:
+
+- LLM Provider → Local | Azure
+- Embeddings → Local | Azure
+- RAG Backend → Local | Azure AI Search
+
+All switches are configuration-driven. No code changes required.
+
+## System Positioning
+
+This system is designed as:
+
+- A deterministic alternative to LLM-first agents
+- A hybrid AI architecture (local + cloud)
+- A production-ready foundation for enterprise copilots
+
+Not:
+- a prompt-based chatbot
+- a framework-dependent agent
+
+## Execution Transparency
+
+- Every request produces an explicit execution path
+- Plans can be logged, inspected, and replayed
+- System behavior is debuggable at step level
+
+## Resilience & Failure Handling
+
+- Retry logic for tool execution
+- Fallback between Azure and local providers
+- Timeout and circuit breaker controls
+
 ---
 
 ## Architecture
@@ -118,12 +169,12 @@ A[User Query] --> B[API Layer - FastAPI]
 B --> C[Orchestrator]
 
 C --> D[Policy Guard]
-C --> E[Intent Classifier]
+C --> E[Intent Parser (Rule-based)]
 C --> F[Memory Context]
 
-C --> G[Decomposer]
+C --> G[Task Decomposer]
 
-G --> H[Planner]
+G --> H[Planner / Agent Planner]
 
 H --> I[Executor]
 
@@ -239,6 +290,12 @@ Every query is treated as:
 
 Query → Tasks → Plans → Execution
 
+### 5. Execution Guarantees
+
+- Every tool call is explicitly planned and validated
+- No implicit LLM-triggered actions
+- All execution paths are traceable and reproducible
+
 ---
 
 ## Example Flows
@@ -272,10 +329,9 @@ Custom evaluation framework validates:
 
 Run:
 
-`````markdown
-````bash
+```bash
 python -m app.eval.eval_runner
-
+```
 
 ---
 
@@ -287,6 +343,7 @@ python -m app.eval.eval_runner
 python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
+```
 
 
 ---
@@ -345,29 +402,35 @@ curl "http://localhost:8000/api/chat?query=Track%20ORD1%20and%20refund%20ORD2"
 
 ---
 
-Tech Stack
+## Tech Stack
 
-Backend
-	•	FastAPI
-	•	Python
+### Backend
+- FastAPI
+- Python
 
-LLM
-	•	Ollama (phi3, mistral, llama3, qwen)
+### LLM Providers
+- Local (Ollama)
+- Azure OpenAI (Responses API)
 
-Retrieval (RAG)
-	•	Chroma / FAISS
+### Retrieval (RAG)
+- Local (Chroma / FAISS)
+- Azure AI Search (vector + hybrid)
 
-Memory & State
-	•	In-memory session store (extensible to Redis)
+### Embeddings
+- Local models
+- Azure Embeddings
 
-Frontend
-	•	Vanilla JavaScript
-	•	HTML / CSS
-	•	Server-Sent Events (SSE) for streaming
+### Memory
+- In-memory (dev)
+- Redis (optional)
 
-Infrastructure (Optional)
-	•	Docker
-	•	Redis (for scaling memory/queues)
+### Frontend
+- Vanilla JavaScript (SSE streaming)
+
+### Infrastructure
+- Docker
+- Redis
+- Azure (OpenAI, AI Search, Key Vault, Blob - planned)
 
 ---
 
@@ -383,26 +446,30 @@ Infrastructure (Optional)
 | Production readiness   | Low     | High        |
 
 
+## Framework Independence
+
+This system does not depend on agent frameworks (LangChain, AutoGen) for execution.
+
+- Core logic is implemented as deterministic system components
+- Frameworks are integrated only as optional adapters
+- Execution control remains fully within the orchestrator
+
 ---
 
-Future Improvements
-	•	WebSocket-based streaming (upgrade from SSE)
-	•	Distributed task execution (Celery / queue-based workers)
-	•	Persistent memory (Redis / database-backed sessions)
-	•	pgvector for production-grade vector storage
-	•	Human-in-the-loop dashboard for escalations
-	•	Advanced observability (tracing, dashboards, alerts)
-	•	Authentication + multi-user session isolation
-	•	UI enhancements (chat history, session restore, theming)
+### Future Improvements
+
+- Agentic planner (LLM-driven structured plan generation)
+- DAG-based execution engine (dependency-aware execution)
+- Tool-level caching and step reuse
+- Persistent memory (Redis / DB-backed sessions)
+- Distributed execution (queue-based workers)
+- Advanced observability (tracing, dashboards)
+- WebSocket streaming (replace SSE)
+- Authentication + multi-tenant isolation
 
 ---
 
 License
 
 MIT License
-````
-`````
 
-```
-
-```
