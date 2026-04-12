@@ -5,13 +5,16 @@ from app.core.config import settings
 
 
 class AzureEmbeddingProvider(EmbeddingProvider):
-    def __init__(self):
+    def __init__(self, secret_provider):
+        self.secret_provider = secret_provider
+
         self.client = AsyncAzureOpenAI(
-            api_key=settings.AZURE_OPENAI_API_KEY,
-            azure_endpoint=settings.AZURE_OPENAI_ENDPOINT,
+            api_key=self.secret_provider.get_secret("AZURE_OPENAI_API_KEY"),
+            azure_endpoint=self.secret_provider.get_secret("AZURE_OPENAI_ENDPOINT"),
             api_version=settings.AZURE_EMBEDDING_API_VERSION,
         )
-        self.model = settings.AZURE_EMBEDDING_DEPLOYMENT
+
+        self.model = self.secret_provider.get_secret("AZURE_EMBEDDING_DEPLOYMENT")
 
     async def embed(self, text: str) -> List[float]:
         response = await self.client.embeddings.create(

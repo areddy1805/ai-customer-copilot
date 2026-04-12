@@ -5,13 +5,17 @@ from app.core.config import settings
 
 
 class AzureProvider(LLMProvider):
-    def __init__(self):
+
+    def __init__(self, secret_provider):
+        self.secret_provider = secret_provider
+
         self.client = AsyncAzureOpenAI(
-            api_key=settings.AZURE_OPENAI_API_KEY,
-            azure_endpoint=settings.AZURE_OPENAI_ENDPOINT,
+            api_key=self.secret_provider.get_secret("AZURE_OPENAI_API_KEY"),
+            azure_endpoint=self.secret_provider.get_secret("AZURE_OPENAI_ENDPOINT"),
             api_version=settings.AZURE_OPENAI_API_VERSION,
         )
-        self.deployment = settings.AZURE_OPENAI_DEPLOYMENT
+
+        self.deployment = self.secret_provider.get_secret("AZURE_OPENAI_DEPLOYMENT")
 
     async def generate(self, prompt: str, config: LLMConfig) -> str:
         response = await self.client.responses.create(

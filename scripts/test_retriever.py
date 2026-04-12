@@ -1,6 +1,9 @@
 import asyncio
 from app.rag.retriever import Retriever
 
+from app.core.bootstrap import load_environment
+
+load_environment()
 
 queries = [
     "i didnt receive my package",

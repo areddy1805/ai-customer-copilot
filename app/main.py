@@ -4,6 +4,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.chat import router as chat_router
 from app.api.health import router as health_router
 from app.core.config import settings
+from app.core.bootstrap import load_environment
+from app.core.secrets.env_provider import EnvSecretProvider
 
 
 app = FastAPI()
@@ -11,24 +13,39 @@ app = FastAPI()
 
 @app.on_event("startup")
 async def startup_checks():
+
+    # =========================
+    # LOAD ENV (CRITICAL)
+    # =========================
+    load_environment()
+
     # =========================
     # CONFIG VISIBILITY
     # =========================
     print(f"[CONFIG] LLM_PROVIDER={settings.LLM_PROVIDER}")
     print(f"[CONFIG] EMBEDDING_PROVIDER={settings.EMBEDDING_PROVIDER}")
+    print(f"[CONFIG] SEARCH_PROVIDER={settings.SEARCH_PROVIDER}")
+    print(f"[CONFIG] SECRET_PROVIDER={settings.SECRET_PROVIDER}")
 
     # =========================
-    # AZURE VALIDATION (FAIL FAST)
+    # SECRET VALIDATION
     # =========================
+    secret_provider = EnvSecretProvider()
+
     if settings.LLM_PROVIDER == "azure":
-        assert settings.AZURE_OPENAI_API_KEY, "Missing AZURE_OPENAI_API_KEY"
-        assert settings.AZURE_OPENAI_ENDPOINT, "Missing AZURE_OPENAI_ENDPOINT"
-        assert settings.AZURE_OPENAI_DEPLOYMENT, "Missing AZURE_OPENAI_DEPLOYMENT"
+        assert secret_provider.get_secret("AZURE_OPENAI_API_KEY")
+        assert secret_provider.get_secret("AZURE_OPENAI_ENDPOINT")
+        assert secret_provider.get_secret("AZURE_OPENAI_DEPLOYMENT")
 
     if settings.EMBEDDING_PROVIDER == "azure":
-        assert settings.AZURE_OPENAI_API_KEY, "Missing AZURE_OPENAI_API_KEY"
-        assert settings.AZURE_OPENAI_ENDPOINT, "Missing AZURE_OPENAI_ENDPOINT"
-        assert settings.AZURE_EMBEDDING_DEPLOYMENT, "Missing AZURE_EMBEDDING_DEPLOYMENT"
+        assert secret_provider.get_secret("AZURE_OPENAI_API_KEY")
+        assert secret_provider.get_secret("AZURE_OPENAI_ENDPOINT")
+        assert secret_provider.get_secret("AZURE_EMBEDDING_DEPLOYMENT")
+
+    if settings.SEARCH_PROVIDER == "azure":
+        assert secret_provider.get_secret("AZURE_SEARCH_ENDPOINT")
+        assert secret_provider.get_secret("AZURE_SEARCH_KEY")
+        assert secret_provider.get_secret("AZURE_SEARCH_INDEX")
 
     # =========================
     # MODE VISIBILITY
@@ -63,7 +80,7 @@ app.include_router(health_router, prefix="/api")
 # =========================
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # for local dev
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

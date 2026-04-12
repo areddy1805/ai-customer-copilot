@@ -11,11 +11,15 @@ load_dotenv()
 
 class AzureSearchProvider(SearchProvider):
 
-    def __init__(self):
+    def __init__(self, secret_provider):
+        self.secret_provider = secret_provider
+
         self.client = SearchClient(
-            endpoint=os.getenv("AZURE_SEARCH_ENDPOINT"),
-            index_name=os.getenv("AZURE_SEARCH_INDEX"),
-            credential=AzureKeyCredential(os.getenv("AZURE_SEARCH_KEY")),
+            endpoint=self.secret_provider.get_secret("AZURE_SEARCH_ENDPOINT"),
+            index_name=self.secret_provider.get_secret("AZURE_SEARCH_INDEX"),
+            credential=AzureKeyCredential(
+                self.secret_provider.get_secret("AZURE_SEARCH_KEY")
+            ),
         )
 
     def search(self, query: str, embedding: list, k: int = 5):

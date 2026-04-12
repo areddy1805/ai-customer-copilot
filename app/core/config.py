@@ -11,6 +11,18 @@ class Settings(BaseSettings):
     APP_ENV: str = "local"
 
     # =========================
+    # PROVIDERS
+    # =========================
+    LLM_PROVIDER: str = "local"
+    EMBEDDING_PROVIDER: str = "local"
+    SEARCH_PROVIDER: str = "local"
+
+    # =========================
+    # SECRET PROVIDER SWITCH
+    # =========================
+    SECRET_PROVIDER: str = "env"  # env | keyvault
+
+    # =========================
     # REDIS
     # =========================
     REDIS_HOST: str = "localhost"
@@ -26,30 +38,21 @@ class Settings(BaseSettings):
     POSTGRES_PASSWORD: str = "admin"
 
     # =========================
-    # PROVIDERS
-    # =========================
-    LLM_PROVIDER: str = "local"
-    EMBEDDING_PROVIDER: str = "local"
-
-    # =========================
     # OLLAMA (LOCAL LLM)
     # =========================
     OLLAMA_BASE_URL: str = "http://localhost:11434"
     OLLAMA_TIMEOUT: int = 60
 
     # =========================
-    # AZURE OPENAI (LLM)
+    # AZURE NON-SECRET CONFIG
     # =========================
-    AZURE_OPENAI_API_KEY: str = ""
-    AZURE_OPENAI_ENDPOINT: str = ""
     AZURE_OPENAI_API_VERSION: str = "2024-12-01-preview"
-    AZURE_OPENAI_DEPLOYMENT: str = "gpt-4o-mini"
+    AZURE_EMBEDDING_API_VERSION: str = "2024-12-01-preview"
 
     # =========================
-    # AZURE OPENAI (EMBEDDINGS)
+    # KEY VAULT (NON-SECRET)
     # =========================
-    AZURE_EMBEDDING_API_VERSION: str = "2024-12-01-preview"
-    AZURE_EMBEDDING_DEPLOYMENT: str = "text-embedding-3-small"
+    AZURE_KEY_VAULT_URL: str = ""
 
     # =========================
     # VALIDATION
@@ -64,6 +67,18 @@ class Settings(BaseSettings):
     def validate_embedding_provider(cls, v):
         if v not in ["local", "azure"]:
             raise ValueError("EMBEDDING_PROVIDER must be 'local' or 'azure'")
+        return v
+
+    @field_validator("SEARCH_PROVIDER")
+    def validate_search_provider(cls, v):
+        if v not in ["local", "azure"]:
+            raise ValueError("SEARCH_PROVIDER must be 'local' or 'azure'")
+        return v
+
+    @field_validator("SECRET_PROVIDER")
+    def validate_secret_provider(cls, v):
+        if v not in ["env", "keyvault"]:
+            raise ValueError("SECRET_PROVIDER must be 'env' or 'keyvault'")
         return v
 
 

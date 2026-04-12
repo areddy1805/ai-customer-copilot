@@ -16,11 +16,11 @@ from azure.core.credentials import AzureKeyCredential
 import os
 
 
-def create_index():
+def create_index(secret_provider):
 
-    endpoint = os.getenv("AZURE_SEARCH_ENDPOINT")
-    key = os.getenv("AZURE_SEARCH_KEY")
-    index_name = os.getenv("AZURE_SEARCH_INDEX")
+    endpoint = secret_provider.get_secret("AZURE_SEARCH_ENDPOINT")
+    key = secret_provider.get_secret("AZURE_SEARCH_KEY")
+    index_name = secret_provider.get_secret("AZURE_SEARCH_INDEX")
 
     client = SearchIndexClient(endpoint=endpoint, credential=AzureKeyCredential(key))
 

@@ -1,5 +1,8 @@
 import asyncio
 from app.embeddings.provider_factory import get_embedding_provider
+from app.core.bootstrap import load_environment
+
+load_environment()
 
 
 async def main():
