@@ -1,15 +1,16 @@
 class ToolRegistry:
 
-    def __init__(self, embedder):
-        self.embedder = embedder
-        self.tools = []
+    def __init__(self):
+        self.tools = {}
 
-    def register(self, name: str, description: str):
-        embedding = self.embedder.embed_query(description)
+    def register(self, name: str, tool_callable):
+        self.tools[name] = tool_callable
 
-        self.tools.append(
-            {"name": name, "description": description, "embedding": embedding}
-        )
+    def get(self, name: str):
+        tool = self.tools.get(name)
+        if not tool:
+            raise ValueError(f"Tool not found: {name}")
+        return tool
 
-    def get_all(self):
-        return self.tools
+    def list_tools(self):
+        return list(self.tools.keys())

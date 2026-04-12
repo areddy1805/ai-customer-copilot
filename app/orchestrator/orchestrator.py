@@ -41,7 +41,7 @@ from app.agent.schemas import Plan as AgentPlan
 
 
 class Orchestrator:
-    def __init__(self):
+    def __init__(self, executor):
         self.classifier = IntentClassifier()
         self.router = Router()
         self.llm = LLMService()
@@ -72,16 +72,7 @@ class Orchestrator:
         self.semantic_cache = SemanticCache(self.embedder)
 
         self.planner = Planner()
-        self.executor = Executor(
-            {
-                "order": self.order_tool,
-                "refund": self.refund_tool,
-                "ticket": self.ticket_tool,
-                "extract_order_id": self._extract_order_id,
-                "ask_order_id": self._ask_order_id,
-                "rag": self,
-            }
-        )
+        self.executor = executor
 
         self.plan_validator = PlanValidator()
         self.decomposer = Decomposer()
@@ -204,9 +195,8 @@ class Orchestrator:
 
             q_lower = user_query.lower()
 
-            # -------- WEAK INTENT CORRECTION --------
             if not pending:
-                if "refund" in q_lower or "refnd" in q_lower:
+                if "refund" in q_lower:
                     intent = "refund_request"
                 elif "order" in q_lower or "track" in q_lower:
                     intent = "order_status"
@@ -218,13 +208,11 @@ class Orchestrator:
 
             state.metadata["route"] = "rag" if intent == "refund_policy" else "tool"
 
-            # -------- GENERAL --------
             if intent == "general" and not pending:
                 return _exit(
                     "I can help with order tracking, refunds, or delivery issues."
                 )
 
-            # -------- MULTI-INTENT SPLIT --------
             parts = [p.strip() for p in user_query.split(" and ") if p.strip()]
 
             rag_response = None
@@ -236,7 +224,6 @@ class Orchestrator:
                 else:
                     tool_parts.append(part)
 
-            # -------- SLOT (TOP LEVEL) --------
             order_id = self._extract_order_id(user_query)
             if (
                 intent
@@ -253,13 +240,12 @@ class Orchestrator:
 
                 return _exit(msg)
 
-            # -------- MEMORY --------
             memory_context = self._get_memory_context(session_id)
 
             all_results = []
             state.metadata["plans"] = []
 
-            async def _run_task(task):
+            def _run_task(task):
 
                 if self.agent_enabled:
                     try:
@@ -268,8 +254,6 @@ class Orchestrator:
                             context={"memory": memory_context, "intent": intent},
                         )
 
-                        print(agent_plan)
-                        # MUST FAIL HERE IF INVALID
                         self.agent_validator.validate(agent_plan)
 
                         state.metadata["plans"].append(
@@ -279,7 +263,9 @@ class Orchestrator:
                             ]
                         )
 
-                        return await self._execute_agent_plan(agent_plan)
+                        # === FIX: USE NEW EXECUTOR ===
+                        result = self.executor.execute(agent_plan)
+                        return result
 
                     except Exception as e:
                         print("AGENT FAILURE:", str(e))
@@ -287,35 +273,19 @@ class Orchestrator:
                 plan = self._get_deterministic_plan(intent, task)
                 state.metadata["plans"].append([step.action for step in plan.steps])
 
-                return await self.executor.execute_parallel(plan)
+                # === FIX: REMOVE ASYNC EXECUTOR ===
+                return self.executor.execute(plan)
 
-            async def run_all():
-                return await asyncio.gather(
-                    *[_run_task(t) for t in tool_parts or [user_query]]
-                )
-
-            results = asyncio.run(run_all())
+            results = [_run_task(t) for t in (tool_parts or [user_query])]
 
             for res in results:
 
                 if res is None:
                     continue
 
-                # ===== HANDLE ESCALATION =====
-                if isinstance(res, tuple) and res[0] == "__ESCALATE__":
-                    _, t_intent, error = res
-                    self._escalate(session_id, user_query, t_intent, error)
-                    return _exit(
-                        "Your request has been escalated to a support agent.",
-                        "failure",
-                        error,
-                    )
-
-                # ===== NORMALIZE TOOLRESULT =====
                 if hasattr(res, "success") and hasattr(res, "data"):
                     res = res.data
 
-                # ===== FLATTEN =====
                 if isinstance(res, dict) and "steps" in res:
                     for step in res["steps"]:
                         if "_tool" in step:
@@ -328,10 +298,9 @@ class Orchestrator:
                 elif isinstance(res, dict):
                     all_results.append(res)
 
-            # -------- RESPONSE BUILD --------
-            responses = []
-
             print("ALL RESULTS:", all_results)
+
+            responses = []
 
             for data in all_results:
 
@@ -340,13 +309,13 @@ class Orchestrator:
 
                 tool = data.get("_tool")
 
-                if tool == "order":
+                # === FIX: TOOL NAME ALIGNMENT ===
+                if tool == "get_order":
                     responses.append(
                         f"Your order {data.get('order_id')} is {data.get('status')} and expected by {data.get('delivery_eta')}."
                     )
 
                 elif tool == "refund":
-
                     if data.get("error"):
                         responses.append(data.get("error"))
                     else:
@@ -354,7 +323,7 @@ class Orchestrator:
                             f"Refund status for order {data.get('order_id')} is {data.get('status')}."
                         )
 
-                elif tool == "ticket":
+                elif tool == "create_ticket":
                     responses.append(
                         f"Ticket {data.get('ticket_id')} for order {data.get('order_id')} is currently {data.get('status')}."
                     )
@@ -362,10 +331,11 @@ class Orchestrator:
                 elif "response" in data:
                     responses.append(data["response"])
 
-            if not responses:
-                response = "Unable to process request. Please try again."
-            else:
-                response = " ".join(responses)
+            response = (
+                "Unable to process request. Please try again."
+                if not responses
+                else " ".join(responses)
+            )
 
             self.memory.add_message(session_id, "user", user_query)
             self.memory.add_message(session_id, "assistant", response)
@@ -387,7 +357,7 @@ class Orchestrator:
 
     # ================= HELPERS =================
 
-    async def _execute_agent_plan(self, agent_plan: AgentPlan):
+    def _execute_agent_plan(self, agent_plan: AgentPlan):
 
         from app.orchestrator.plan import Plan, Step
 
@@ -423,7 +393,7 @@ class Orchestrator:
             return {"steps": [{"response": "No executable steps"}]}
 
         # ===== EXECUTE USING EXISTING ENGINE =====
-        result = await self.executor.execute_parallel(Plan(steps, query=""))
+        result = self.executor.execute(plan)
 
         final_steps = []
 
