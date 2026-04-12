@@ -219,7 +219,22 @@ class Orchestrator:
             print("DEBUG_INTENT:", intent, "| QUERY:", user_query)
             if intent == "refund_policy":
                 try:
-                    response = await self.rag.generate(user_query)
+
+                    async def safe_rag():
+                        return await asyncio.wait_for(
+                            retry(self.rag.generate)(user_query), timeout=10
+                        )
+
+                    if not self.rag_cb.allow():
+                        raise Exception("RAG circuit open")
+
+                    try:
+                        response = await safe_rag()
+                        self.rag_cb.record_success()
+
+                    except Exception:
+                        self.rag_cb.record_failure()
+                        raise
 
                     bad = (
                         not response
@@ -294,7 +309,21 @@ class Orchestrator:
                 plan = self.planner.create_plan(intent, task, memory_context)
                 state.metadata["plans"].append([str(step) for step in plan.steps])
 
-                result = await self.executor.execute_parallel(plan)
+                async def safe_execute():
+                    return await asyncio.wait_for(
+                        retry(self.executor.execute_parallel)(plan), timeout=10
+                    )
+
+                if not self.rag_cb.allow():
+                    raise Exception("RAG circuit open")
+
+                try:
+                    result = await safe_execute()
+                    self.rag_cb.record_success()
+
+                except Exception as e:
+                    self.rag_cb.record_failure()
+                    raise e
 
                 if not result or not result.success:
                     error = (
