@@ -37,9 +37,9 @@ Production-grade AI system with **deterministic orchestration, tool-first execut
 
 ## Overview
 
-This system is not a chatbot.
+This is not a chatbot.
 
-It is a **controlled AI system** that:
+This is a **controlled AI execution system** where:
 
 - Executes real actions (order tracking, refunds, tickets)
 - Uses structured planning instead of raw LLM replies
@@ -87,41 +87,116 @@ It is a **controlled AI system** that:
 
 ---
 
-## Core Capabilities
+## Security & Secrets
 
-### Deterministic Orchestration
+Secrets are not stored in code or config.
 
-- Planner-driven execution (no direct LLM control)
-- Explicit step-by-step tool execution
-- Zero hallucination for critical actions
+### Secret Management
 
-### Multi-Intent Handling
+- Azure Key Vault (primary)
+- Env-based fallback (local development only)
 
 - Rule-based query decomposition (`AND`, `THEN`)
 - Sequential execution pipeline
 - Agentic planning layer will replace this with dynamic plan generation
 
-### Tool Execution Layer
+SECRET_PROVIDER=env | keyvault
 
-- Order status retrieval
-- Refund processing with business rules
-- Support ticket creation
+Architecture:
 
-### Memory System
+Providers → SecretProvider → (Env OR Key Vault)
 
-- Session-based conversation tracking
-- Context-aware execution
+### Key Vault Integration
 
-### RAG Integration
+- Secrets fetched at runtime
+- In-memory caching (no repeated network calls)
+- No secrets in `.env` (production mode)
 
-- Policy grounding (refunds, delivery rules)
-- Context injection without overload
+### Naming Constraint Handling
 
-### Guard & Safety Layer
+Azure Key Vault does not support underscores.
 
-- Prompt injection protection
+Internal mapping layer converts:
+
+AZURE_OPENAI_API_KEY → azure-openai-api-key
+
+## SYSTEM EVOLUTION
+
+### BEFORE
+- Local LLM (Ollama)
+- Local embeddings
+- Chroma vector DB
+
+### NOW (HYBRID)
+- Secrets → Azure Key Vault (secure, runtime retrieval)
+- LLM → Azure (primary) + Local (automatic fallback)
+- Resilience → Retry + Timeout + Circuit Breaker enforced
+- Response Cache → request-level caching (Redis/in-memory)
+
+---
+
+## Core Capabilities
+
+### Deterministic Orchestration
+- Planner → Executor pipeline
+- No direct LLM tool execution
+- Guaranteed execution correctness
+
+### Hybrid LLM Layer
+- Azure OpenAI (primary)
+- Ollama (automatic fallback)
+- Retry + timeout enforced on Azure calls
+- Circuit breaker prevents cascading failures
+
+Behavior:
+
+Azure success → used
+Azure failure → automatic fallback to local
+
+### Hybrid Embeddings
+- Local: SentenceTransformers
+- Azure: text-embedding-3-small
+- Config-driven switching
+
+### RAG (Controlled + Hybrid Retrieval)
+- Retriever + strict grounding
+- LLM cannot override retrieved facts
+- Post-response enforcement
+- Backend: Chroma OR Azure AI Search
+- Azure enables hybrid retrieval (vector + keyword)
+
+### Async + Streaming
+- Fully async pipeline
+- SSE streaming for responses
+- Parallel execution for multi-intent
+
+### Multi-Intent Execution
+- Query decomposition
+- Parallel tool execution
+- Deterministic aggregation
+
+### Tool Layer (Pure Functions)
+- Order tracking
+- Refund processing
+- Ticket creation
+
+### Memory Layer
+- Session-scoped context
+- Extendable to Redis
+
+### Guardrails
 - Input validation
-- Controlled escalation
+- Prompt injection protection
+- Execution safety
+
+### Resilience Layer
+
+- Retry with exponential backoff (Azure calls)
+- Timeout enforcement (prevents hanging requests)
+- Circuit breaker (failure isolation)
+- Automatic fallback (Azure → Local)
+
+Ensures system never fails due to external dependency.
 
 ## Hybrid Execution Control
 
@@ -164,7 +239,7 @@ Not:
 ```mermaid
 flowchart TD
 
-A[User Query] --> B[API Layer - FastAPI]
+A[User] --> B[FastAPI]
 
 B --> C[Orchestrator]
 
@@ -176,27 +251,103 @@ C --> G[Task Decomposer]
 
 G --> H[Planner / Agent Planner]
 
-H --> I[Executor]
+I1 --> I4[Search Provider]
+I4 --> I5[Chroma Local]
+I4 --> I6[Azure AI Search Hybrid]
 
-I --> J[Order Tool]
-I --> K[Refund Tool]
-I --> L[Ticket Tool]
+%% ================= RESILIENCE (RAG) =================
+I --> R1[Retry and Timeout]
+R1 --> R2[Circuit Breaker]
 
-J --> M[Tool Results]
-K --> M
-L --> M
+%% ================= LLM =================
+C --> J[LLM Service]
+I --> J
 
-M --> N[RAG Service]
+%% ================= LLM INTERNAL =================
+J --> J1[Retry and Timeout]
+J1 --> J2[Azure OpenAI Primary]
+J2 -->|failure| J3[Local LLM Fallback]
 
-N --> O[Response Builder]
+%% ================= SECRETS =================
+J --> S[Secret Provider]
+S --> S1[Env Local]
+S --> S2[Azure Key Vault]
 
-O --> P[Final Response]
+I --> S
 
-P --> Q[Observability / Metrics]
+%% ================= MEMORY =================
+C --> N[Memory]
 
-G --> R[Cache Layer]
-C --> R
+%% ================= STREAM =================
+C --> O[Streaming Layer]
+O --> P[Client]
+
+%% ================= FINAL =================
+J --> Z
+R2 --> J
 ```
+
+---
+
+Provider Abstraction (Core Design)
+
+LLM
+
+LLM_PROVIDER=local | azure
+
+	•	Local → Ollama
+	•	Azure → Responses API
+
+---
+
+Embeddings
+
+EMBEDDING_PROVIDER=local | azure
+
+	•	Local → SentenceTransformers
+	•	Azure → text-embedding-3-small
+
+---
+
+Search Provider (RAG Backend)
+
+SEARCH_PROVIDER=local | azure
+
+• Local → Chroma (vector-only retrieval)
+• Azure → Azure AI Search (hybrid: vector + keyword)
+
+Key Behavior:
+• Each provider maintains its own index
+• Switching provider requires reindex
+• No shared storage between providers
+
+---
+
+Key Insight (From Evaluation)
+
+System behavior:
+
+~90% → Tool execution
+~10% → RAG usage
+
+Implication:
+	•	Orchestrator dominates correctness
+	•	RAG quality matters only when invoked
+
+---
+
+Embedding Evaluation Result
+
+Query	Local	Azure
+didnt receive package	PASS	PASS+
+item came broken	PASS	PASS+
+shipping time	FAIL	PASS
+cancel after ordering	PASS	PASS+
+
+Conclusion
+	•	Azure embeddings improve semantic retrieval
+	•	Local embeddings rely on keyword overlap
+	•	System now exposes real retrieval differences
 
 ---
 
@@ -221,7 +372,7 @@ C --> R
 │ ├── cache/ # Response + semantic caching
 │ ├── security/ # Rate limiting, circuit breaker, concurrency
 │ ├── observability/ # Metrics + logging
-│ ├── llm/ # LLM client + prompt layer
+│ ├── llm/ # provider abstraction (Azure / Ollama) /LLM client + prompt layer
 │ ├── eval/ # Evaluation framework
 │ ├── core/ # Config + logging setup
 │ └── main.py # Entry point
@@ -270,21 +421,29 @@ All decisions are orchestrator-controlled.
 
 ---
 
-### 2. Planner > Router
+### 2. Planner-Centric Execution
 
-Routing is simplified.
 Planner defines execution path.
+Router only assists.
 
 ---
 
 ### 3. Stateless Tools + Stateful Orchestrator
 
-- Tools are pure functions
-- Orchestrator manages context and flow
+- Tools = pure functions
+- Orchestrator = state + control
 
 ---
 
-### 4. Multi-Step Execution as First-Class Citizen
+### 4. Async + Parallel by Default
+
+- Multi-intent → parallel execution
+- Streaming → non-blocking
+- System remains responsive under load
+
+---
+
+### 5. Multi-Step Execution as First-Class Citizen
 
 Every query is treated as:
 
@@ -314,7 +473,119 @@ Track ORD1 and refund ORD2
 [order ORD2 → refund ORD2]
 
 → Response:
-Order + Refund combined
+Order + Refund combined (deterministic order)
+
+### RAG + Streaming
+
+What is refund policy
+
+→ Routed to RAG
+→ LLM streams tokens
+→ Grounded response enforced
+
+→ Response:
+Grounded response
+
+---
+
+---
+
+Configuration
+
+.env (control only — no secrets)
+
+```text
+LLM_PROVIDER=local | azure
+EMBEDDING_PROVIDER=local | azure
+SEARCH_PROVIDER=local | azure
+
+SECRET_PROVIDER=env | keyvault
+AZURE_KEY_VAULT_URL=https://<vault>.vault.azure.net/
+```
+
+Note:
+
+- Azure secrets must NOT be stored in `.env`
+- All secrets are fetched from Azure Key Vault in production mode
+
+---
+
+Runtime Visibility
+
+Logs active providers at startup:
+
+[CONFIG] LLM_PROVIDER=local
+[CONFIG] EMBEDDING_PROVIDER=azure
+[CONFIG] SEARCH_PROVIDER=azure
+
+
+---
+
+Running
+
+1. Install
+
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+
+
+---
+
+2. Reindex (CRITICAL)
+
+python -m scripts.reindex
+
+Must be run after:
+	•	embedding switch
+	•	knowledge base change
+  • search provider switch (local ↔ azure)
+
+---
+
+3. Run API
+
+uvicorn app.main:app --reload
+
+
+---
+
+4. Run UI
+
+cd client
+python -m http.server 3000
+
+
+---
+
+5. Test
+
+curl "http://localhost:8000/api/chat?query=Track%20ORD1%20and%20refund%20ORD2"
+
+
+---
+
+Evaluation
+
+System Eval
+
+python -m app.eval.eval_runner
+
+Validates:
+	•	intent classification
+	•	tool routing
+	•	execution correctness
+
+---
+
+Retriever Eval
+
+python -m scripts.test_retriever
+
+Validates:
+	•	embedding quality
+	•	semantic retrieval
+	•	chunk relevance
 
 ---
 
@@ -339,7 +610,7 @@ python -m app.eval.eval_runner
 
 1. Setup Environment
 
-```bash
+```text
 python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
@@ -441,9 +712,15 @@ curl "http://localhost:8000/api/chat?query=Track%20ORD1%20and%20refund%20ORD2"
 | Tool execution         | ❌      | ✅           |
 | Deterministic flow     | ❌      | ✅           |
 | Multi-intent support   | ❌      | ✅           |
+| Async execution        | ❌      | ✅           |
+| Streaming 		     | ❌      | ✅           |
 | Memory                 | Limited | Structured  |
 | RAG grounding          | Partial | Integrated  |
 | Production readiness   | Low     | High        |
+| Pluggable LLMs 	     | ❌      | ✅           |
+| Observability          | Minimal | Integrated  |
+| Safety / Guardrails    | Weak    | Enforced    |
+| Production readiness   | Low	   | High        |
 
 
 ## Framework Independence
@@ -469,7 +746,7 @@ This system does not depend on agent frameworks (LangChain, AutoGen) for executi
 
 ---
 
-License
+## Tradeoffs
 
 MIT License
 

@@ -1,4 +1,5 @@
 from typing import List
+import asyncio
 
 from app.rag.retriever import Retriever
 from app.llm.service import LLMService
@@ -11,21 +12,21 @@ class RAGService:
         self.llm = LLMService()
 
     # ================= NON-STREAM =================
-    def generate(self, query: str) -> str:
-        chunks = self.retriever.retrieve(query)  # already List[str]
+    async def generate(self, query: str) -> str:
+        chunks = await self.retriever.retrieve(query)
 
         if not chunks:
             return "No relevant information found."
 
         context = "\n".join(chunks)
 
-        response = self.llm.generate(TaskType.RAG, query, context=context)
+        response = await self.llm.generate(TaskType.RAG, query, context=context)
 
-        return self._enforce_strict_rag(response, chunks)
+        return self._best_match(response, chunks)
 
     # ================= STREAM =================
-    def generate_stream(self, query: str):
-        chunks = self.retriever.retrieve(query)
+    async def generate_stream(self, query: str):
+        chunks = await self.retriever.retrieve(query)
 
         if not chunks:
             yield "No relevant information found."
@@ -33,33 +34,13 @@ class RAGService:
 
         context = "\n".join(chunks)
 
-        stream = self.llm.generate_stream(TaskType.RAG, query, context=context)
-
-        full_response = ""
-
-        for token in stream:
-            full_response += token
-
-        grounded = self._enforce_strict_rag(full_response, chunks)
-
-        # ONLY emit grounded response
-        yield grounded
+        async for token in self.llm.generate_stream(
+            TaskType.RAG, query, context=context
+        ):
+            yield token
+            await asyncio.sleep(0.03)
 
     # ================= ENFORCEMENT =================
-    def _enforce_strict_rag(self, response: str, chunks: List[str]) -> str:
-        response = (response or "").strip()
-
-        if not chunks:
-            return "No relevant information found."
-
-        # exact containment
-        for chunk in chunks:
-            if response and response in chunk:
-                return response
-
-        # best match fallback
-        return chunks[0]
-
     def _best_match(self, response: str, chunks: List[str]) -> str:
         if not response:
             return chunks[0]

@@ -50,8 +50,15 @@ class Evaluator:
                 return False
 
             if "expected_contains" in expected and expected["expected_contains"]:
-                if expected["expected_contains"].lower() not in response.lower():
-                    return False
+                exp = expected["expected_contains"]
+
+                if isinstance(exp, list):
+                    for e in exp:
+                        if e.lower() not in response.lower():
+                            return False
+                else:
+                    if exp.lower() not in response.lower():
+                        return False
 
         # route check
         if "expected_route" in expected:

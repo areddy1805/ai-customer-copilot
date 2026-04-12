@@ -1,0 +1,22 @@
+[
+  {
+    "query": "i canceled my order but haven't received money",
+    "expected": "refund"
+  },
+  {
+    "query": "my package says delivered but i never got it",
+    "expected": "delivered"
+  },
+  {
+    "query": "item came broken",
+    "expected": "damaged"
+  },
+  {
+    "query": "how many days for delivery",
+    "expected": "shipping"
+  },
+  {
+    "query": "can i stop my order after placing it",
+    "expected": "cancel"
+  }
+]

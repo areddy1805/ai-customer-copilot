@@ -16,10 +16,11 @@ ALLOWED_ACTIONS = {
 
 
 class Planner:
+    def __init__(self):
+        self.llm = LLMService()
+
     def create_plan(self, intent: str, query: str, context: str = "") -> Plan:
-
         order_ids = re.findall(r"ORD\d+", query.upper())
-
         steps = []
 
         if intent == "order_status":
@@ -47,33 +48,32 @@ class Planner:
         return Plan(steps, query=query)
 
     # ================= LLM PLANNER =================
-    def _llm_plan(self, query: str, feedback: str = "", context: str = ""):
-
+    async def llm_plan(self, query: str, feedback: str = "", context: str = ""):
         prompt = f"""
-    Return a JSON plan.
+Return a JSON plan.
 
-    Conversation:
-    {context}
+Conversation:
+{context}
 
-    Allowed actions:
-    {list(ALLOWED_ACTIONS)}
+Allowed actions:
+{list(ALLOWED_ACTIONS)}
 
-    Rules:
-    - Max 3 steps
-    - Only valid actions
-    - No explanation
+Rules:
+- Max 3 steps
+- Only valid actions
+- No explanation
 
-    Feedback:
-    {feedback}
+Feedback:
+{feedback}
 
-    Format:
-    {{"steps": [{{"action": "...", "input": {{}}}}]}}
+Format:
+{{"steps": [{{"action": "...", "input": {{}}}}]}}
 
-    Query: {query}
-    """
+Query: {query}
+"""
 
         try:
-            response = self.llm.generate(TaskType.GENERAL, prompt)
+            response = await self.llm.generate(TaskType.GENERAL, prompt)
             data = json.loads(response)
 
             steps = []
