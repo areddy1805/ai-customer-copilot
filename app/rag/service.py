@@ -3,16 +3,24 @@ from typing import List
 from app.rag.retriever import Retriever
 from app.llm.service import LLMService
 from app.llm.models import TaskType
+from app.cache.response_cache import ResponseCache
 
 
 class RAGService:
     def __init__(self):
         self.retriever = Retriever()
         self.llm = LLMService()
+        self.cache = ResponseCache()
 
     # ================= NON-STREAM =================
     def generate(self, query: str) -> str:
-        chunks = self.retriever.retrieve(query)  # already List[str]
+        # -------- CACHE HIT --------
+        cached = self.cache.get(query)
+        if cached:
+            print("RAG CACHE HIT")
+            return cached
+
+        chunks = self.retriever.retrieve(query)
 
         if not chunks:
             return "No relevant information found."
@@ -21,10 +29,22 @@ class RAGService:
 
         response = self.llm.generate(TaskType.RAG, query, context=context)
 
-        return self._enforce_strict_rag(response, chunks)
+        grounded = self._enforce_strict_rag(response, chunks)
+
+        # -------- STORE --------
+        self.cache.set(query, grounded)
+
+        return grounded
 
     # ================= STREAM =================
     def generate_stream(self, query: str):
+        # -------- CACHE HIT --------
+        cached = self.cache.get(query)
+        if cached:
+            print("RAG CACHE HIT (STREAM)")
+            yield cached
+            return
+
         chunks = self.retriever.retrieve(query)
 
         if not chunks:
@@ -42,7 +62,9 @@ class RAGService:
 
         grounded = self._enforce_strict_rag(full_response, chunks)
 
-        # ONLY emit grounded response
+        # -------- STORE --------
+        self.cache.set(query, grounded)
+
         yield grounded
 
     # ================= ENFORCEMENT =================
@@ -52,12 +74,10 @@ class RAGService:
         if not chunks:
             return "No relevant information found."
 
-        # exact containment
         for chunk in chunks:
             if response and response in chunk:
                 return response
 
-        # best match fallback
         return chunks[0]
 
     def _best_match(self, response: str, chunks: List[str]) -> str:

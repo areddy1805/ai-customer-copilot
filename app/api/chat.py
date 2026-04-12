@@ -1,10 +1,12 @@
 import time
 from fastapi import APIRouter, Query
 from fastapi.responses import StreamingResponse
+from app.cache.response_cache import ResponseCache
 
 from app.core.container import orchestrator as orch
 
 router = APIRouter()
+response_cache = ResponseCache()
 
 
 # -------- STREAMING --------
@@ -31,13 +33,26 @@ def chat(
     session_id: str = Query("default"),
     debug: bool = Query(False),
 ):
+    # -------- CACHE HIT (ONLY FOR NON-DEBUG) --------
+    if not debug:
+        cached = response_cache.get(query)
+        if cached:
+            return {"response": cached}
+
+    # -------- NORMAL FLOW --------
     state = orch.run(query, session_id)
 
+    final_response = state.final_response
+
+    # -------- CACHE STORE --------
     if not debug:
-        return {"response": state.final_response}
+        response_cache.set(query, final_response)
+
+    if not debug:
+        return {"response": final_response}
 
     return {
-        "response": state.final_response,
+        "response": final_response,
         "intent": state.intent,
         "route": state.metadata.get("route"),
         "plans": state.metadata.get("plans"),
