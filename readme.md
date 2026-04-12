@@ -52,10 +52,11 @@ It is a **controlled AI system** that:
 
 | Branch | Description |
 |--------|------------|
-| main | Final hybrid system (Azure + Local + Resilience) |
-| feature/azure-migration | Step-by-step Azure integration |
-| feature/agentic-framework | Experimental agentic execution layer |
-| legacy/local-only | Original local-only implementation |
+| main | Stable baseline (local deterministic orchestrator) |
+| feature/azure-migration | Hybrid Azure + Local system (LLM, embeddings, AI Search) |
+| feature/agentic-framework | Deterministic agent planner + DAG execution layer |
+| feature/framework-adapters | LangChain + AutoGen compatibility layer (non-core) |
+| legacy/local-only | Initial prototype before system architecture stabilization |
 
 ---
 
