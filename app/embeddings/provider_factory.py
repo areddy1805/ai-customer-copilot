@@ -8,7 +8,6 @@ from app.embeddings.azure_provider import AzureEmbeddingProvider
 def get_embedding_provider():
 
     secret_provider = get_secret_provider()
-    print("SECRET_PROVIDER INSTANCE:", type(secret_provider).__name__)
 
     if settings.EMBEDDING_PROVIDER == "azure":
         return AzureEmbeddingProvider(secret_provider=secret_provider)

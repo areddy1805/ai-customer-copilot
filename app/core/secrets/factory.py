@@ -6,7 +6,6 @@ settings = get_settings()
 
 
 def get_secret_provider():
-    print("SECRET_PROVIDER CONFIG:", settings.SECRET_PROVIDER)
     if settings.SECRET_PROVIDER == "keyvault":
         return KeyVaultSecretProvider(vault_url=settings.AZURE_KEY_VAULT_URL)
 

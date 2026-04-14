@@ -173,6 +173,26 @@ class Orchestrator:
             tasks = await self.decomposer.decompose(user_query)
             print("DECOMPOSED_TASKS:", tasks)
 
+            # -------- PARALLEL PLANNING --------
+            memory_context = self._get_memory_context(session_id)
+
+            plans = await asyncio.gather(
+                *[
+                    self.planner.create_plan(
+                        self.classifier.classify(t["query"]),
+                        t["query"],
+                        memory_context,
+                    )
+                    for t in tasks
+                ]
+            )
+
+            validated_plans = []
+
+            for plan in plans:
+                plan, error = self.plan_validator.validate(plan)
+                validated_plans.append(plan)
+
             if not tasks:
                 parts = [p.strip() for p in user_query.split(" and ") if p.strip()]
                 tasks = (
@@ -183,29 +203,28 @@ class Orchestrator:
 
             print("FINAL_TASKS:", tasks)
 
-            memory_context = self._get_memory_context(session_id)
-
             state.metadata["plans"] = []
 
             # -------- EXECUTION UNIT --------
-            async def _run_task(task_query):
-                task_intent = self.classifier.classify(task_query)
-
-                plan = await self.planner.create_plan(
-                    task_intent, task_query, memory_context
-                )
-
-                plan, error = self.plan_validator.validate(plan)
-                if not plan:
-                    return None
-
-                state.metadata["plans"].append([str(step) for step in plan.steps])
+            async def _run_task(plan):
 
                 try:
-                    result = await self.executor.execute_parallel(plan)
+                    # -------- RAG TIMEOUT ISOLATION --------
+                    if any(step.action == "rag" for step in plan.steps):
+                        try:
+                            result = await asyncio.wait_for(
+                                self.executor.execute_parallel(plan),
+                                timeout=6,  # Azure-safe window
+                            )
+                        except asyncio.TimeoutError:
+                            return None  # drop slow RAG
+                    else:
+                        result = await self.executor.execute_parallel(plan)
+
                 except Exception:
                     return None
 
+                # -------- FAILURE HANDLING --------
                 if not result or not result.success:
                     err = (
                         getattr(result, "error", "unknown_failure")
@@ -221,19 +240,35 @@ class Orchestrator:
                 data = result.data
                 print("EXECUTOR RAW RESULT:", data)
 
-                # -------- STEP FORMAT --------
+                # -------- CASE 1: EXECUTOR STEP FORMAT --------
                 if isinstance(data, dict) and "steps" in data:
-                    return {"steps": data["steps"]}
+                    normalized = []
 
-                # -------- DIRECT RAG --------
+                    for step in data["steps"]:
+                        # preserve rag normalization
+                        if step.get("_tool") == "rag" and step.get("response"):
+                            normalized.append(
+                                {"_tool": "rag", "response": step["response"]}
+                            )
+                        else:
+                            normalized.append(step)
+
+                    return {"steps": normalized}
+
+                # -------- CASE 2: DIRECT RAG OBJECT --------
                 if isinstance(data, dict) and data.get("_tool") == "rag":
+                    if not data.get("response"):
+                        return {
+                            "_tool": "rag",
+                            "response": "No relevant information found.",
+                        }
                     return data
 
-                # -------- STRING → RAG --------
+                # -------- CASE 3: RAW STRING → RAG --------
                 if isinstance(data, str):
                     return {"_tool": "rag", "response": data}
 
-                # -------- GENERIC RESPONSE --------
+                # -------- CASE 4: GENERIC RESPONSE DICT --------
                 if isinstance(data, dict) and "response" in data:
                     return {"_tool": "rag", "response": data["response"]}
 
@@ -243,11 +278,18 @@ class Orchestrator:
             tool_tasks = []
             rag_tasks = []
 
-            for t in tasks:
+            for i, t in enumerate(tasks):
+                plan = validated_plans[i]
+
+                if not plan:
+                    continue
+
+                state.metadata["plans"].append([str(step) for step in plan.steps])
+
                 if t["type"] == "rag":
-                    rag_tasks.append(_run_task(t["query"]))
+                    rag_tasks.append(_run_task(plan))
                 else:
-                    tool_tasks.append(_run_task(t["query"]))
+                    tool_tasks.append(_run_task(plan))
 
             # -------- EXECUTE TOOLS (STRICT) --------
             tool_results = await asyncio.gather(*tool_tasks, return_exceptions=True)
@@ -257,8 +299,8 @@ class Orchestrator:
 
             if rag_tasks:
                 try:
-                    rag_results = await asyncio.wait_for(
-                        asyncio.gather(*rag_tasks, return_exceptions=True), timeout=2
+                    rag_results = await asyncio.gather(
+                        *rag_tasks, return_exceptions=True
                     )
                 except asyncio.TimeoutError:
                     rag_results = []
@@ -360,7 +402,6 @@ class Orchestrator:
 
         for token in response.split(" "):
             yield token + " "
-            await asyncio.sleep(0.02)
 
     # ================= HELPERS =================
     def _extract_tools(self, plans):
