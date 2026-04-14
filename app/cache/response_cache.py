@@ -6,12 +6,9 @@ class ResponseCache:
     def __init__(self):
         self.client = redis.Redis(host="localhost", port=6379, decode_responses=True)
 
-    def _key(self, query: str) -> str:
-        return f"response:{query.strip().lower()}"
+    def set(self, key: str, value, ttl: int = 300):
+        self.client.setex(key, ttl, json.dumps(value))
 
-    def get(self, query: str):
-        data = self.client.get(self._key(query))
+    def get(self, key: str):
+        data = self.client.get(key)
         return json.loads(data) if data else None
-
-    def set(self, query: str, response: str, ttl: int = 300):
-        self.client.setex(self._key(query), ttl, json.dumps(response))

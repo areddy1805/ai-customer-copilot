@@ -44,6 +44,7 @@ async def chat(payload: dict):
 
     return {
         "response": state.final_response,
+        "details": state.metadata.get("details"),
         "intent": state.intent,
         "route": state.metadata.get("route"),
         "plans": state.metadata.get("plans"),

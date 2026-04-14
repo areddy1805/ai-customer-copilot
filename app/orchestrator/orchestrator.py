@@ -21,14 +21,16 @@ from app.security.circuit_breaker import CircuitBreaker
 from app.utils.retry import retry
 from app.observability.metrics import Metrics
 from app.guard.response_validator import ResponseValidator
+from app.cache.semantic_cache import SemanticCache
+from app.rag.embedder import Embedder
 
-# from app.rag.embedder import Embedder
-# from app.cache.semantic_cache import SemanticCache
 from app.orchestrator.planner import Planner
 from app.orchestrator.plan import Plan, Step
 from app.orchestrator.executor import Executor
 from app.orchestrator.plan_validator import PlanValidator
 from app.orchestrator.decomposer import Decomposer
+from app.orchestrator.response_composer import ResponseComposer
+
 from app.tools.rag_tool import RAGTool
 
 from app.core.error_mapper import ErrorMapper
@@ -36,6 +38,8 @@ from app.core.error_mapper import ErrorMapper
 
 import re
 import time
+import hashlib
+import json
 
 
 class Orchestrator:
@@ -53,6 +57,7 @@ class Orchestrator:
 
         self.planner = Planner(self.llm)
         self.decomposer = Decomposer(self.llm)
+        self.response_composer = ResponseComposer()
 
         self.guard = PolicyGuard()
         self.escalation = EscalationService()
@@ -61,6 +66,8 @@ class Orchestrator:
         self.cache = ResponseCache()
         self.rate_limiter = RateLimiter()
         self.inflight = InFlightRegistry()
+        self.embedder = Embedder()
+        self.semantic_cache = SemanticCache(self.embedder)
         self.concurrent = ConcurrencyLimiter(max_concurrent=5)
 
         self.llm_cb = CircuitBreaker()
@@ -88,8 +95,6 @@ class Orchestrator:
         state = ConversationState(user_query=user_query)
         trace_id = str(uuid.uuid4())
         state.metadata["trace_id"] = trace_id
-
-        cache_key = f"{session_id}:{user_query}"
 
         def _to_str(resp):
             if isinstance(resp, str):
@@ -169,11 +174,10 @@ class Orchestrator:
 
             print("ENTERING AGENTIC FLOW")
 
-            # -------- DECOMPOSITION --------
+            # -------- DECOMPOSE --------
             tasks = await self.decomposer.decompose(user_query)
             print("DECOMPOSED_TASKS:", tasks)
 
-            # -------- PARALLEL PLANNING --------
             memory_context = self._get_memory_context(session_id)
 
             plans = await asyncio.gather(
@@ -188,9 +192,8 @@ class Orchestrator:
             )
 
             validated_plans = []
-
             for plan in plans:
-                plan, error = self.plan_validator.validate(plan)
+                plan, _ = self.plan_validator.validate(plan)
                 validated_plans.append(plan)
 
             if not tasks:
@@ -206,112 +209,160 @@ class Orchestrator:
             state.metadata["plans"] = []
 
             # -------- EXECUTION UNIT --------
-            async def _run_task(plan):
+            async def _run_task(plan, original_query):
+
+                cache_key = self._plan_cache_key(plan)
+                owner = self.inflight.set_if_absent(cache_key)
+
+                # -------- INFLIGHT WAIT --------
+                if not owner:
+                    self.metrics.inc("inflight_wait")
+
+                    for _ in range(20):
+                        cached = self.inflight.get(cache_key)
+                        if cached is not None:
+                            return cached
+                        await asyncio.sleep(0.1)
+
+                    return None
 
                 try:
-                    # -------- RAG TIMEOUT ISOLATION --------
-                    if any(step.action == "rag" for step in plan.steps):
-                        try:
-                            result = await asyncio.wait_for(
-                                self.executor.execute_parallel(plan),
-                                timeout=6,  # Azure-safe window
-                            )
-                        except asyncio.TimeoutError:
-                            return None  # drop slow RAG
-                    else:
-                        result = await self.executor.execute_parallel(plan)
+                    # -------- L1: SEMANTIC CACHE --------
+                    semantic_key = original_query.lower().strip()
 
-                except Exception:
-                    return None
+                    semantic_cached = self.semantic_cache.get(semantic_key)
+                    if semantic_cached:
+                        self.metrics.inc("semantic_hit")
 
-                # -------- FAILURE HANDLING --------
-                if not result or not result.success:
-                    err = (
-                        getattr(result, "error", "unknown_failure")
-                        if result
-                        else "no_result"
-                    )
+                        final = {"_tool": "rag", "response": semantic_cached}
 
-                    if err == "Order not found":
-                        return {"_tool": "order", "response": "Order not found."}
+                        self.inflight.set(cache_key, final)
+                        return final
 
-                    return None
+                    # -------- L2: REDIS CACHE --------
+                    cached = self.cache.get(cache_key)
+                    if cached:
+                        self.metrics.inc("cache_hit")
 
-                data = result.data
-                print("EXECUTOR RAW RESULT:", data)
+                        self.inflight.set(cache_key, cached)
+                        return cached
 
-                # -------- CASE 1: EXECUTOR STEP FORMAT --------
-                if isinstance(data, dict) and "steps" in data:
-                    normalized = []
+                    # -------- MISS --------
+                    self.metrics.inc("cache_miss")
+                    self.metrics.inc("execution_start")
 
-                    for step in data["steps"]:
-                        # preserve rag normalization
-                        if step.get("_tool") == "rag" and step.get("response"):
-                            normalized.append(
-                                {"_tool": "rag", "response": step["response"]}
-                            )
+                    # -------- EXECUTION --------
+                    try:
+                        if any(step.action == "rag" for step in plan.steps):
+                            try:
+                                result = await asyncio.wait_for(
+                                    self.executor.execute_parallel(plan),
+                                    timeout=6,
+                                )
+                            except asyncio.TimeoutError:
+                                self.metrics.inc("execution_timeout")
+                                return None
                         else:
-                            normalized.append(step)
+                            result = await self.executor.execute_parallel(plan)
 
-                    return {"steps": normalized}
+                    except Exception:
+                        self.metrics.inc("execution_error")
+                        return None
 
-                # -------- CASE 2: DIRECT RAG OBJECT --------
-                if isinstance(data, dict) and data.get("_tool") == "rag":
-                    if not data.get("response"):
-                        return {
-                            "_tool": "rag",
-                            "response": "No relevant information found.",
+                    # -------- FAILURE --------
+                    if not result or not result.success:
+                        err = (
+                            getattr(result, "error", "unknown_failure")
+                            if result
+                            else "no_result"
+                        )
+
+                        if err == "Order not found":
+                            return {"_tool": "order", "response": "Order not found."}
+
+                        return None
+
+                    self.metrics.inc("execution_success")
+                    data = result.data
+                    print("EXECUTOR RAW RESULT:", data)
+
+                    # -------- NORMALIZATION --------
+                    if isinstance(data, dict) and "steps" in data:
+                        final = {
+                            "steps": [
+                                (
+                                    {"_tool": "rag", "response": s["response"]}
+                                    if s.get("_tool") == "rag" and s.get("response")
+                                    else s
+                                )
+                                for s in data["steps"]
+                            ]
                         }
-                    return data
 
-                # -------- CASE 3: RAW STRING → RAG --------
-                if isinstance(data, str):
-                    return {"_tool": "rag", "response": data}
+                    elif isinstance(data, dict) and data.get("_tool") == "rag":
+                        final = (
+                            data
+                            if data.get("response")
+                            else {
+                                "_tool": "rag",
+                                "response": "No relevant information found.",
+                            }
+                        )
 
-                # -------- CASE 4: GENERIC RESPONSE DICT --------
-                if isinstance(data, dict) and "response" in data:
-                    return {"_tool": "rag", "response": data["response"]}
+                    elif isinstance(data, str):
+                        final = {"_tool": "rag", "response": data}
 
-                return None
+                    elif isinstance(data, dict) and "response" in data:
+                        final = {"_tool": "rag", "response": data["response"]}
 
-            # -------- TASK SPLIT --------
-            tool_tasks = []
-            rag_tasks = []
+                    else:
+                        final = None
+
+                    # -------- STORE --------
+                    if final:
+                        self.cache.set(cache_key, final)
+                        self.metrics.inc("cache_store")
+
+                        # -------- SEMANTIC STORE (ONLY RAG) --------
+                        if final.get("_tool") == "rag" and final.get("response"):
+                            self.semantic_cache.set(semantic_key, final["response"])
+                            self.metrics.inc("semantic_store")
+
+                    self.inflight.set(cache_key, final)
+                    return final
+
+                finally:
+                    if owner:
+                        self.inflight.delete(cache_key)
+
+            # -------- SPLIT --------
+            tool_tasks, rag_tasks = [], []
 
             for i, t in enumerate(tasks):
                 plan = validated_plans[i]
-
                 if not plan:
                     continue
 
                 state.metadata["plans"].append([str(step) for step in plan.steps])
 
                 if t["type"] == "rag":
-                    rag_tasks.append(_run_task(plan))
+                    rag_tasks.append(_run_task(plan, t["query"]))
                 else:
-                    tool_tasks.append(_run_task(plan))
+                    tool_tasks.append(_run_task(plan, t["query"]))
 
-            # -------- EXECUTE TOOLS (STRICT) --------
+            # -------- EXECUTE --------
             tool_results = await asyncio.gather(*tool_tasks, return_exceptions=True)
-
-            # -------- EXECUTE RAG (ISOLATED, NON-BLOCKING) --------
-            rag_results = []
-
-            if rag_tasks:
-                try:
-                    rag_results = await asyncio.gather(
-                        *rag_tasks, return_exceptions=True
-                    )
-                except asyncio.TimeoutError:
-                    rag_results = []
+            rag_results = (
+                await asyncio.gather(*rag_tasks, return_exceptions=True)
+                if rag_tasks
+                else []
+            )
 
             results = tool_results + rag_results
 
             # -------- MERGE --------
             all_results = []
-
             for res in results:
-
                 if isinstance(res, Exception) or not res:
                     continue
 
@@ -324,42 +375,14 @@ class Orchestrator:
 
                 all_results.append(res)
 
-            # -------- RESPONSE BUILD --------
-            responses = []
+            # -------- RESPONSE --------
+            structured = self.response_composer.compose(all_results, state.intent)
 
-            for data in all_results:
-                tool = data.get("_tool")
+            response = structured["summary"]
+            state.metadata["details"] = structured["details"]
 
-                if tool == "order":
-                    responses.append(
-                        f"Order {data.get('order_id')} is {data.get('status')}."
-                    )
-
-                elif tool == "refund":
-                    responses.append(
-                        f"Refund for {data.get('order_id')} is {data.get('status')}."
-                    )
-
-                elif tool == "ticket":
-                    responses.append(
-                        f"Ticket {data.get('ticket_id')} is {data.get('status')}."
-                    )
-
-                elif tool == "rag":
-                    if data.get("response"):
-                        responses.append(data["response"])
-
-            response = (
-                " ".join(responses) if responses else "Unable to process request."
-            )
-
-            # -------- MEMORY --------
             self.memory.add_message(session_id, "user", user_query)
             self.memory.add_message(session_id, "assistant", response)
-
-            # -------- CACHE --------
-            if response and "unable to process" not in response.lower():
-                self.cache.set(cache_key, response)
 
             return _exit(response, clear_session=True)
 
@@ -453,3 +476,15 @@ class Orchestrator:
             success=True,
             data={"response": "Please provide your order ID to proceed."},
         )
+
+    def _plan_cache_key(self, plan: Plan):
+        steps = [
+            {
+                "action": step.action,
+                "params": step.params,
+            }
+            for step in plan.steps
+        ]
+
+        raw = json.dumps(steps, sort_keys=True)
+        return hashlib.md5(raw.encode()).hexdigest()

@@ -6,11 +6,14 @@ from app.api.health import router as health_router
 from app.core.config import settings
 from app.core.bootstrap import load_environment
 from app.core.secrets.factory import get_secret_provider
+from app.api.metrics import router as metrics_router
+
 
 secret_provider = get_secret_provider()
 
 
 app = FastAPI()
+app.include_router(metrics_router)
 
 
 @app.on_event("startup")
