@@ -42,8 +42,13 @@ class Orchestrator:
         self.classifier = IntentClassifier()
         self.router = Router()
         self.llm = LLMService()
+
         self.memory = MemoryService()
-        self.rag = RAGService()
+
+        self.rag = RAGService(self.llm)
+        self.planner = Planner(self.llm)
+        self.decomposer = Decomposer(self.llm)
+
         self.order_tool = OrderTool()
         self.refund_tool = RefundTool()
         self.ticket_tool = TicketTool()
@@ -68,37 +73,31 @@ class Orchestrator:
         # self.embedder = Embedder()
         # self.semantic_cache = SemanticCache(self.embedder)
 
-        self.planner = Planner()
         self.executor = Executor(
             {
                 "order": self.order_tool,
                 "refund": self.refund_tool,
                 "ticket": self.ticket_tool,
-                "extract_order_id": self._extract_order_id,
-                "ask_order_id": self._ask_order_id,
                 "rag": self,
             }
         )
 
         self.plan_validator = PlanValidator()
-        self.decomposer = Decomposer()
 
         # self.semantic_cache.store = []
         self.session_state = {}
 
     # ================= RUN =================
+
     async def run(self, user_query: str, session_id: str) -> ConversationState:
         self.metrics.inc("requests_total")
         start_time = time.time()
+
         state = ConversationState(user_query=user_query)
         trace_id = str(uuid.uuid4())
         state.metadata["trace_id"] = trace_id
 
         cache_key = f"{session_id}:{user_query}"
-
-        cached = self.cache.get(cache_key)
-        if cached:
-            return _exit(cached)
 
         def _to_str(resp):
             if isinstance(resp, str):
@@ -121,17 +120,12 @@ class Orchestrator:
             else:
                 self.metrics.inc("requests_failure")
 
-            if error == "user_requested_human":
-                self.metrics.inc("requests_escalated")
-
             if error:
                 mapped = ErrorMapper.map(error)
                 self.metrics.inc(f"error_type_{mapped['error_type']}")
                 self.metrics.inc(f"error_code_{mapped['error_code']}")
 
             self.metrics.observe("total_latency", latency)
-
-            mapped_error = ErrorMapper.map(error) if error else None
 
             self.logger.log_request(
                 session_id=session_id,
@@ -142,7 +136,7 @@ class Orchestrator:
                 tools_used=self._extract_tools(state.metadata.get("plans")),
                 latency_ms=latency,
                 status=status,
-                error=mapped_error,
+                error=error,
             )
 
             if clear_session:
@@ -153,20 +147,12 @@ class Orchestrator:
         try:
             # -------- RATE LIMIT --------
             if not self.rate_limiter.allow(session_id):
-                return _exit(
-                    "Too many requests. Please try again later.",
-                    "failure",
-                    "rate_limit",
-                )
+                return _exit("Too many requests.", "failure", "rate_limit")
 
             # -------- GUARD --------
             guard = self.guard.evaluate(user_query, "unknown")
             if not guard["allowed"]:
-                return _exit(
-                    "Your request cannot be processed due to security or validation constraints.",
-                    "failure",
-                    "guard_block",
-                )
+                return _exit("Request blocked.", "failure", "guard_block")
 
             # -------- HUMAN --------
             if any(
@@ -181,264 +167,110 @@ class Orchestrator:
                 self._escalate(
                     session_id, user_query, "human_request", "User requested human"
                 )
-                return _exit(
-                    "Connecting you to a support agent.",
-                    "failure",
-                    "user_requested_human",
-                )
+                return _exit("Connecting to agent.", "failure", "user_requested_human")
 
-            # -------- SLOT RESOLUTION --------
-            pending = self.session_state.get(session_id)
-            if pending:
-                order_id = self._extract_order_id(user_query)
-                if order_id:
-                    user_query = f"{pending['intent']} {order_id}"
-                    intent = pending["intent"]
-                else:
-                    return _exit("Please provide a valid order ID.", "failure")
-            else:
-                intent = self.classifier.classify(user_query)
-
-            q_lower = user_query.lower()
-
-            # -------- STRONG INTENT PRIORITY --------
-            if not pending:
-                if any(
-                    k in q_lower for k in ["refund policy", "return policy", "policy"]
-                ):
-                    intent = "refund_policy"
-                elif "refund" in q_lower or "refnd" in q_lower:
-                    intent = "refund_request"
-                elif "order" in q_lower or "track" in q_lower:
-                    intent = "order_status"
-                elif "ticket" in q_lower or "issue" in q_lower:
-                    intent = "create_ticket"
-
-            # -------- FINAL INTENT NORMALIZATION (LOCK) --------
-            if any(k in q_lower for k in ["refund policy", "return policy", "policy"]):
-                intent = "refund_policy"
-
+            # -------- INTENT --------
+            intent = self.classifier.classify(user_query)
             state.intent = intent
+            state.metadata["route"] = "agentic"
             self.metrics.inc(f"intent_{intent}")
 
-            state.metadata["route"] = "rag" if intent == "refund_policy" else "tool"
-            print("DEBUG_INTENT:", intent, "| QUERY:", user_query)
-            if intent == "refund_policy":
-                try:
+            print("ENTERING AGENTIC FLOW")
 
-                    async def safe_rag():
-                        return await asyncio.wait_for(
-                            retry(self.rag.generate)(user_query), timeout=10
-                        )
+            # -------- DECOMPOSITION --------
+            tasks = await self.decomposer.decompose(user_query)
+            print("DECOMPOSED_TASKS:", tasks)
 
-                    if not self.rag_cb.allow():
-                        raise Exception("RAG circuit open")
-
-                    try:
-                        response = await safe_rag()
-                        self.rag_cb.record_success()
-
-                    except Exception:
-                        self.rag_cb.record_failure()
-                        raise
-
-                    bad = (
-                        not response
-                        or len(response.strip()) < 15
-                        or any(
-                            k in response.lower()
-                            for k in [
-                                "more specific",
-                                "more details",
-                                "provide more",
-                                "not enough",
-                                "no relevant",
-                                "not found",
-                            ]
-                        )
-                    )
-
-                    if bad:
-                        return _exit(
-                            "A customer is eligible for a refund if the order is cancelled before shipment, returned within 7 days of delivery, or received damaged or defective."
-                        )
-
-                    return _exit(response)
-
-                except Exception:
-                    return _exit(
-                        "A customer is eligible for a refund if the order is cancelled before shipment, returned within 7 days of delivery, or received damaged or defective."
-                    )
-
-            # -------- GENERAL --------
-            if intent == "general" and not pending:
-                return _exit(
-                    "I can help with order tracking, refunds, or delivery issues."
+            if not tasks:
+                parts = [p.strip() for p in user_query.split(" and ") if p.strip()]
+                tasks = (
+                    [{"query": p, "type": "tool"} for p in parts]
+                    if parts
+                    else [{"query": user_query, "type": "tool"}]
                 )
 
-            # -------- MULTI-INTENT SPLIT --------
-            parts = [p.strip() for p in user_query.split(" and ") if p.strip()]
+            print("FINAL_TASKS:", tasks)
 
-            rag_response = None
-            tool_parts = []
-
-            for part in parts:
-                if "refund policy" in part.lower():
-                    rag_response = await self.rag.generate(part)
-                else:
-                    tool_parts.append(part)
-
-            # -------- SLOT (TOP LEVEL) --------
-            order_id = self._extract_order_id(user_query)
-            if (
-                intent
-                in ["order_status", "refund_request", "create_ticket", "delivery_issue"]
-                and not order_id
-            ):
-                if not self.session_state.get(session_id):
-                    self.session_state[session_id] = {"intent": intent}
-
-                msg = {
-                    "order_status": "Please provide your order ID to check order status.",
-                    "refund_request": "Please provide your order ID to process refund request.",
-                }.get(intent, "Please provide your order ID to create a ticket.")
-
-                return _exit(msg)
-
-            # -------- MEMORY --------
             memory_context = self._get_memory_context(session_id)
 
-            all_results = []
             state.metadata["plans"] = []
+            all_results = []
 
-            async def _run_task(task):
-                plan = self.planner.create_plan(intent, task, memory_context)
+            # -------- EXECUTION --------
+            async def _run_task(task_query):
+                task_intent = self.classifier.classify(task_query)
+
+                plan = await self.planner.create_plan(
+                    task_intent, task_query, memory_context
+                )
+
+                plan, error = self.plan_validator.validate(plan)
+                if not plan:
+                    return {"response": "Unable to process request."}
+
                 state.metadata["plans"].append([str(step) for step in plan.steps])
 
-                async def safe_execute():
-                    return await asyncio.wait_for(
-                        retry(self.executor.execute_parallel)(plan), timeout=10
-                    )
-
-                if not self.rag_cb.allow():
-                    raise Exception("RAG circuit open")
-
-                try:
-                    result = await safe_execute()
-                    self.rag_cb.record_success()
-
-                except Exception as e:
-                    self.rag_cb.record_failure()
-                    raise e
+                result = await asyncio.wait_for(
+                    self.executor.execute_parallel(plan), timeout=5
+                )
 
                 if not result or not result.success:
-                    error = (
+                    err = (
                         getattr(result, "error", "unknown_failure")
                         if result
                         else "no_result"
                     )
 
-                    if error == "Order not found":
-                        return {
-                            "response": f"Order {order_id} not found. Please check your order ID."
-                        }
-                    elif "not delivered" in error.lower():
-                        oid = self._extract_order_id(task)
-                        return {
-                            "response": f"Refund status for order {oid} is pending."
-                        }
-                    else:
-                        return "__ESCALATE__", intent, error
+                    if err == "Order not found":
+                        return {"response": f"Order not found."}
+
+                    return {"response": "Unable to process request."}
 
                 return result.data
 
-            results = await asyncio.gather(
-                *[_run_task(t) for t in tool_parts or [user_query]]
-            )
+            results = await asyncio.gather(*[_run_task(t["query"]) for t in tasks])
+
+            # -------- RESPONSE BUILD --------
+            responses = []
 
             for res in results:
-                if isinstance(res, tuple) and res[0] == "__ESCALATE__":
-                    _, t_intent, error = res
-                    self._escalate(session_id, user_query, t_intent, error)
-                    return _exit(
-                        "Your request has been escalated to a support agent.",
-                        "failure",
-                        error,
-                    )
-
                 if "steps" in res:
                     for step in res["steps"]:
-                        if "_tool" in step:
-                            self.metrics.observe(
-                                f"tool_{step['_tool']}_latency", step["_latency_ms"]
-                            )
                         all_results.append(step)
                 else:
                     all_results.append(res)
 
-            responses = []
+            for data in all_results:
+                tool = data.get("_tool")
 
-            if rag_response:
-                responses.append(rag_response)
+                if tool == "order":
+                    responses.append(
+                        f"Order {data.get('order_id')} is {data.get('status')}."
+                    )
+                elif tool == "refund":
+                    responses.append(
+                        f"Refund for {data.get('order_id')} is {data.get('status')}."
+                    )
+                elif tool == "ticket":
+                    responses.append(
+                        f"Ticket {data.get('ticket_id')} is {data.get('status')}."
+                    )
+                elif "response" in data:
+                    responses.append(data["response"])
 
-            if intent == "refund_request":
-                refund_outputs = []
-                order_fallbacks = []
-
-                for data in all_results:
-                    tool = data.get("_tool")
-
-                    if tool == "refund":
-                        refund_outputs.append(
-                            f"Refund status for order {data.get('order_id')} is {data.get('status')}."
-                        )
-
-                    elif tool == "order":
-                        order_fallbacks.append(
-                            f"Your order {data.get('order_id')} is {data.get('status')} and expected by {data.get('delivery_eta')}."
-                        )
-
-                    elif "response" in data:
-                        refund_outputs.append(data["response"])
-
-                # priority: refunds > fallback
-                responses.extend(refund_outputs if refund_outputs else order_fallbacks)
-
-            else:
-                for data in all_results:
-                    tool = data.get("_tool")
-
-                    if tool == "order":
-                        responses.append(
-                            f"Your order {data.get('order_id')} is {data.get('status')} and expected by {data.get('delivery_eta')}."
-                        )
-                    elif "ticket_id" in data:
-                        responses.append(
-                            f"Ticket {data.get('ticket_id')} for order {data.get('order_id')} is currently {data.get('status')}."
-                        )
-                    elif "response" in data:
-                        responses.append(data["response"])
-
-            response = " ".join(
-                sorted(
-                    responses,
-                    key=lambda x: (
-                        x.split("order ")[1].split(" ")[0] if "order" in x else x
-                    ),
-                )
+            response = (
+                " ".join(responses) if responses else "Unable to process request."
             )
 
-            if not responses:
-                responses.append("Unable to process refund request. Please try again.")
-
+            # -------- MEMORY --------
             self.memory.add_message(session_id, "user", user_query)
             self.memory.add_message(session_id, "assistant", response)
 
-            if response.strip():
+            # -------- CACHE (AFTER SUCCESS ONLY) --------
+            if response and "Unable" not in response:
                 self.cache.set(cache_key, response)
-                return _exit(response, clear_session=True)
-            else:
-                return _exit("Something went wrong.")
+
+            return _exit(response, clear_session=True)
 
         finally:
             pass

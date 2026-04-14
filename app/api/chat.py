@@ -2,9 +2,10 @@ import time
 from fastapi import APIRouter, Query
 from fastapi.responses import StreamingResponse
 
-from app.core.container import orchestrator as orch
+from app.core.container import get_orchestrator
 
 router = APIRouter()
+orch = get_orchestrator()
 
 
 # -------- STREAMING --------

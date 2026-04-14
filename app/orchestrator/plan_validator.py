@@ -1,14 +1,5 @@
 from app.orchestrator.plan import Plan, Step
-
-
-ALLOWED_ACTIONS = {
-    "get_order",
-    "check_refund_eligibility",
-    "process_refund",
-    "check_ticket",
-    "create_or_fetch_ticket",
-    "fallback_rag",
-}
+from app.orchestrator.constants import ALLOWED_ACTIONS
 
 
 class PlanValidator:
