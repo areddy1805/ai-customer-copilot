@@ -5,7 +5,9 @@ from app.api.chat import router as chat_router
 from app.api.health import router as health_router
 from app.core.config import settings
 from app.core.bootstrap import load_environment
-from app.core.secrets.env_provider import EnvSecretProvider
+from app.core.secrets.factory import get_secret_provider
+
+secret_provider = get_secret_provider()
 
 
 app = FastAPI()
@@ -30,7 +32,6 @@ async def startup_checks():
     # =========================
     # SECRET VALIDATION
     # =========================
-    secret_provider = EnvSecretProvider()
 
     if settings.LLM_PROVIDER == "azure":
         assert secret_provider.get_secret("AZURE_OPENAI_API_KEY")

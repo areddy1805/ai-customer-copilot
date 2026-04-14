@@ -3,24 +3,36 @@ import asyncio
 
 from app.rag.retriever import Retriever
 from app.llm.service import LLMService
-from app.llm.models import TaskType
 
 
 class RAGService:
-    def __init__(self):
+    def __init__(self, llm: LLMService):
         self.retriever = Retriever()
-        self.llm = LLMService()
+        self.llm = llm
 
     # ================= NON-STREAM =================
     async def generate(self, query: str) -> str:
         chunks = await self.retriever.retrieve(query)
+        print("RAG_SERVICE_CALLED")
 
         if not chunks:
             return "No relevant information found."
 
         context = "\n".join(chunks)
 
-        response = await self.llm.generate(TaskType.RAG, query, context=context)
+        prompt = f"""
+Answer the user query using ONLY the provided context.
+
+Context:
+{context}
+
+Query:
+{query}
+
+Answer:
+"""
+
+        response = await self.llm.generate(prompt, temperature=0, task="rag")
 
         return self._best_match(response, chunks)
 
@@ -34,11 +46,19 @@ class RAGService:
 
         context = "\n".join(chunks)
 
-        async for token in self.llm.generate_stream(
-            TaskType.RAG, query, context=context
-        ):
+        prompt = f"""
+Answer using context only.
+
+Context:
+{context}
+
+Query:
+{query}
+"""
+
+        async for token in self.llm.generate_stream(prompt, temperature=0):
             yield token
-            await asyncio.sleep(0.03)
+            await asyncio.sleep(0.02)
 
     # ================= ENFORCEMENT =================
     def _best_match(self, response: str, chunks: List[str]) -> str:

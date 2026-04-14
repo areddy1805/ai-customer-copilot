@@ -46,7 +46,7 @@ class Settings(BaseSettings):
     # =========================
     # AZURE NON-SECRET CONFIG
     # =========================
-    AZURE_OPENAI_API_VERSION: str = "2024-12-01-preview"
+    AZURE_OPENAI_API_VERSION: str = "2025-03-01-preview"
     AZURE_EMBEDDING_API_VERSION: str = "2024-12-01-preview"
 
     # =========================
@@ -82,4 +82,8 @@ class Settings(BaseSettings):
         return v
 
 
-settings = Settings()
+def get_settings():
+    return Settings()
+
+
+settings = get_settings()

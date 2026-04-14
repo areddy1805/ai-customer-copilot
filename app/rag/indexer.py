@@ -12,14 +12,17 @@ class Indexer:
         self.search_provider = get_search_provider()
 
     async def run(self):
+        # -------- LOAD --------
         documents = self.loader.load_documents()
 
+        # -------- CHUNK --------
         chunks = self.chunker.chunk_documents(documents)
 
+        # -------- EMBED --------
         texts = [c["content"] for c in chunks]
-
         embeddings = await self.embedding_provider.embed_batch(texts)
 
+        # -------- FORMAT --------
         formatted_docs = []
 
         for i, chunk in enumerate(chunks):
@@ -34,4 +37,5 @@ class Indexer:
 
         print("TOTAL DOCS:", len(formatted_docs))
 
+        # -------- INDEX --------
         self.search_provider.index(formatted_docs)
