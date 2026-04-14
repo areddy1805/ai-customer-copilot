@@ -175,41 +175,83 @@ class Orchestrator:
             print("ENTERING AGENTIC FLOW")
 
             # -------- DECOMPOSE --------
-            tasks = await self.decomposer.decompose(user_query)
+            if not self.llm_cb.allow():
+                self.metrics.inc("llm_cb_block")
+                tasks = [{"query": user_query, "type": "tool"}]
+            else:
+                try:
+                    tasks = await self.decomposer.decompose(user_query)
+                    self.llm_cb.record_success()
+                except Exception:
+                    self.llm_cb.record_failure()
+                    tasks = [{"query": user_query, "type": "tool"}]
             print("DECOMPOSED_TASKS:", tasks)
 
             memory_context = self._get_memory_context(session_id)
 
-            plans = await asyncio.gather(
-                *[
-                    self.planner.create_plan(
+            async def _safe_plan(t):
+                if not self.llm_cb.allow():
+                    self.metrics.inc("llm_cb_block")
+                    return None
+
+                try:
+                    plan = await self.planner.create_plan(
                         self.classifier.classify(t["query"]),
                         t["query"],
                         memory_context,
                     )
-                    for t in tasks
-                ]
-            )
+                    self.llm_cb.record_success()
+                    return plan
 
-            validated_plans = []
-            for plan in plans:
+                except Exception:
+                    self.llm_cb.record_failure()
+                    return None
+
+            plans = await asyncio.gather(*[_safe_plan(t) for t in tasks])
+
+            validated = []
+            for t, plan in zip(tasks, plans):
+                if not plan:
+                    continue
                 plan, _ = self.plan_validator.validate(plan)
-                validated_plans.append(plan)
+                if plan:
+                    validated.append((t, plan))
 
-            if not tasks:
+            if not validated:
                 parts = [p.strip() for p in user_query.split(" and ") if p.strip()]
-                tasks = (
+                fallback_tasks = (
                     [{"query": p, "type": "tool"} for p in parts]
                     if parts
                     else [{"query": user_query, "type": "tool"}]
                 )
 
-            print("FINAL_TASKS:", tasks)
+                validated = []
+                for t in fallback_tasks:
+                    try:
+                        plan = await self.planner.create_plan(
+                            self.classifier.classify(t["query"]),
+                            t["query"],
+                            memory_context,
+                        )
+                        plan, _ = self.plan_validator.validate(plan)
+                        if plan:
+                            validated.append((t, plan))
+                    except:
+                        continue
+
+            print("FINAL_VALIDATED:", [t for t, _ in validated])
 
             state.metadata["plans"] = []
 
             # -------- EXECUTION UNIT --------
             async def _run_task(plan, original_query):
+
+                is_rag = any(step.action == "rag" for step in plan.steps)
+
+                # -------- CIRCUIT GUARD (EARLY) --------
+                if is_rag and not self.rag_cb.allow():
+                    self.metrics.inc("rag_cb_block")
+                    return None
 
                 cache_key = self._plan_cache_key(plan)
                 owner = self.inflight.set_if_absent(cache_key)
@@ -227,15 +269,14 @@ class Orchestrator:
                     return None
 
                 try:
-                    # -------- L1: SEMANTIC CACHE --------
                     semantic_key = original_query.lower().strip()
 
+                    # -------- L1: SEMANTIC CACHE --------
                     semantic_cached = self.semantic_cache.get(semantic_key)
                     if semantic_cached:
                         self.metrics.inc("semantic_hit")
 
                         final = {"_tool": "rag", "response": semantic_cached}
-
                         self.inflight.set(cache_key, final)
                         return final
 
@@ -253,7 +294,7 @@ class Orchestrator:
 
                     # -------- EXECUTION --------
                     try:
-                        if any(step.action == "rag" for step in plan.steps):
+                        if is_rag:
                             try:
                                 result = await asyncio.wait_for(
                                     self.executor.execute_parallel(plan),
@@ -261,6 +302,11 @@ class Orchestrator:
                                 )
                             except asyncio.TimeoutError:
                                 self.metrics.inc("execution_timeout")
+                                self.rag_cb.record_failure()
+                                return None
+                            except Exception:
+                                self.metrics.inc("execution_error")
+                                self.rag_cb.record_failure()
                                 return None
                         else:
                             result = await self.executor.execute_parallel(plan)
@@ -271,6 +317,11 @@ class Orchestrator:
 
                     # -------- FAILURE --------
                     if not result or not result.success:
+                        self.metrics.inc("execution_error")
+
+                        if is_rag:
+                            self.rag_cb.record_failure()
+
                         err = (
                             getattr(result, "error", "unknown_failure")
                             if result
@@ -284,7 +335,6 @@ class Orchestrator:
 
                     self.metrics.inc("execution_success")
                     data = result.data
-                    print("EXECUTOR RAW RESULT:", data)
 
                     # -------- NORMALIZATION --------
                     if isinstance(data, dict) and "steps" in data:
@@ -323,10 +373,15 @@ class Orchestrator:
                         self.cache.set(cache_key, final)
                         self.metrics.inc("cache_store")
 
-                        # -------- SEMANTIC STORE (ONLY RAG) --------
-                        if final.get("_tool") == "rag" and final.get("response"):
-                            self.semantic_cache.set(semantic_key, final["response"])
-                            self.metrics.inc("semantic_store")
+                        if is_rag:
+                            self.rag_cb.record_success()
+
+                            if final.get("_tool") == "rag" and final.get("response"):
+                                self.semantic_cache.set(semantic_key, final["response"])
+                                self.metrics.inc("semantic_store")
+                    else:
+                        if is_rag:
+                            self.rag_cb.record_failure()
 
                     self.inflight.set(cache_key, final)
                     return final
@@ -338,11 +393,7 @@ class Orchestrator:
             # -------- SPLIT --------
             tool_tasks, rag_tasks = [], []
 
-            for i, t in enumerate(tasks):
-                plan = validated_plans[i]
-                if not plan:
-                    continue
-
+            for t, plan in validated:
                 state.metadata["plans"].append([str(step) for step in plan.steps])
 
                 if t["type"] == "rag":
@@ -379,6 +430,13 @@ class Orchestrator:
             structured = self.response_composer.compose(all_results, state.intent)
 
             response = structured["summary"]
+
+            # -------- GLOBAL FAILURE DETECTION --------
+            if not all_results:
+                self.metrics.inc("execution_error")
+
+                return _exit("Unable to process request.", "failure", "empty_response")
+
             state.metadata["details"] = structured["details"]
 
             self.memory.add_message(session_id, "user", user_query)
