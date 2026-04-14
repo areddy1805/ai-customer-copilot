@@ -29,6 +29,7 @@ from app.orchestrator.plan import Plan, Step
 from app.orchestrator.executor import Executor
 from app.orchestrator.plan_validator import PlanValidator
 from app.orchestrator.decomposer import Decomposer
+from app.tools.rag_tool import RAGTool
 
 from app.core.error_mapper import ErrorMapper
 
@@ -38,20 +39,21 @@ import time
 
 
 class Orchestrator:
-    def __init__(self):
+    def __init__(self, tools, llm, rag):
+
+        # -------- CORE --------
+        self.tools = tools
+        self.llm = llm
+        self.rag = rag
+
         self.classifier = IntentClassifier()
         self.router = Router()
-        self.llm = LLMService()
 
         self.memory = MemoryService()
 
-        self.rag = RAGService(self.llm)
         self.planner = Planner(self.llm)
         self.decomposer = Decomposer(self.llm)
 
-        self.order_tool = OrderTool()
-        self.refund_tool = RefundTool()
-        self.ticket_tool = TicketTool()
         self.guard = PolicyGuard()
         self.escalation = EscalationService()
         self.logger = Logger()
@@ -70,21 +72,11 @@ class Orchestrator:
         self.metrics = Metrics()
         self.validator = ResponseValidator()
 
-        # self.embedder = Embedder()
-        # self.semantic_cache = SemanticCache(self.embedder)
-
-        self.executor = Executor(
-            {
-                "order": self.order_tool,
-                "refund": self.refund_tool,
-                "ticket": self.ticket_tool,
-                "rag": self,
-            }
-        )
+        # -------- EXECUTOR --------
+        self.executor = Executor(self.tools)
 
         self.plan_validator = PlanValidator()
 
-        # self.semantic_cache.store = []
         self.session_state = {}
 
     # ================= RUN =================
@@ -194,9 +186,8 @@ class Orchestrator:
             memory_context = self._get_memory_context(session_id)
 
             state.metadata["plans"] = []
-            all_results = []
 
-            # -------- EXECUTION --------
+            # -------- EXECUTION UNIT --------
             async def _run_task(task_query):
                 task_intent = self.classifier.classify(task_query)
 
@@ -206,13 +197,14 @@ class Orchestrator:
 
                 plan, error = self.plan_validator.validate(plan)
                 if not plan:
-                    return {"response": "Unable to process request."}
+                    return None
 
                 state.metadata["plans"].append([str(step) for step in plan.steps])
 
-                result = await asyncio.wait_for(
-                    self.executor.execute_parallel(plan), timeout=5
-                )
+                try:
+                    result = await self.executor.execute_parallel(plan)
+                except Exception:
+                    return None
 
                 if not result or not result.success:
                     err = (
@@ -222,23 +214,76 @@ class Orchestrator:
                     )
 
                     if err == "Order not found":
-                        return {"response": f"Order not found."}
+                        return {"_tool": "order", "response": "Order not found."}
 
-                    return {"response": "Unable to process request."}
+                    return None
 
-                return result.data
+                data = result.data
+                print("EXECUTOR RAW RESULT:", data)
 
-            results = await asyncio.gather(*[_run_task(t["query"]) for t in tasks])
+                # -------- STEP FORMAT --------
+                if isinstance(data, dict) and "steps" in data:
+                    return {"steps": data["steps"]}
+
+                # -------- DIRECT RAG --------
+                if isinstance(data, dict) and data.get("_tool") == "rag":
+                    return data
+
+                # -------- STRING → RAG --------
+                if isinstance(data, str):
+                    return {"_tool": "rag", "response": data}
+
+                # -------- GENERIC RESPONSE --------
+                if isinstance(data, dict) and "response" in data:
+                    return {"_tool": "rag", "response": data["response"]}
+
+                return None
+
+            # -------- TASK SPLIT --------
+            tool_tasks = []
+            rag_tasks = []
+
+            for t in tasks:
+                if t["type"] == "rag":
+                    rag_tasks.append(_run_task(t["query"]))
+                else:
+                    tool_tasks.append(_run_task(t["query"]))
+
+            # -------- EXECUTE TOOLS (STRICT) --------
+            tool_results = await asyncio.gather(*tool_tasks, return_exceptions=True)
+
+            # -------- EXECUTE RAG (ISOLATED, NON-BLOCKING) --------
+            rag_results = []
+
+            if rag_tasks:
+                try:
+                    rag_results = await asyncio.wait_for(
+                        asyncio.gather(*rag_tasks, return_exceptions=True), timeout=2
+                    )
+                except asyncio.TimeoutError:
+                    rag_results = []
+
+            results = tool_results + rag_results
+
+            # -------- MERGE --------
+            all_results = []
+
+            for res in results:
+
+                if isinstance(res, Exception) or not res:
+                    continue
+
+                if isinstance(res, dict) and "steps" in res:
+                    all_results.extend(res["steps"])
+                    continue
+
+                if isinstance(res, dict) and "_tool" not in res and "response" in res:
+                    res["_tool"] = "rag"
+
+                all_results.append(res)
 
             # -------- RESPONSE BUILD --------
             responses = []
-
-            for res in results:
-                if "steps" in res:
-                    for step in res["steps"]:
-                        all_results.append(step)
-                else:
-                    all_results.append(res)
 
             for data in all_results:
                 tool = data.get("_tool")
@@ -247,16 +292,20 @@ class Orchestrator:
                     responses.append(
                         f"Order {data.get('order_id')} is {data.get('status')}."
                     )
+
                 elif tool == "refund":
                     responses.append(
                         f"Refund for {data.get('order_id')} is {data.get('status')}."
                     )
+
                 elif tool == "ticket":
                     responses.append(
                         f"Ticket {data.get('ticket_id')} is {data.get('status')}."
                     )
-                elif "response" in data:
-                    responses.append(data["response"])
+
+                elif tool == "rag":
+                    if data.get("response"):
+                        responses.append(data["response"])
 
             response = (
                 " ".join(responses) if responses else "Unable to process request."
@@ -266,8 +315,8 @@ class Orchestrator:
             self.memory.add_message(session_id, "user", user_query)
             self.memory.add_message(session_id, "assistant", response)
 
-            # -------- CACHE (AFTER SUCCESS ONLY) --------
-            if response and "Unable" not in response:
+            # -------- CACHE --------
+            if response and "unable to process" not in response.lower():
                 self.cache.set(cache_key, response)
 
             return _exit(response, clear_session=True)

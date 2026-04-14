@@ -22,6 +22,7 @@ class Executor:
         for step in plan.steps:
 
             tool = self.tools.get(step.action)
+            print("EXECUTOR TOOL:", step.action, tool)
 
             if not tool:
                 return ToolResult(success=False, error=f"Unknown tool {step.action}")
@@ -51,7 +52,7 @@ class Executor:
                 step_data = result.data.copy()
 
                 # attach observability metadata
-                step_data["_tool"] = step.action
+                step_data.setdefault("_tool", step.action)
                 step_data["_latency_ms"] = latency
 
                 results.append(step_data)
@@ -66,6 +67,7 @@ class Executor:
             "order": "get_order_status",
             "refund": "process_refund",
             "ticket": "create_ticket",
+            "rag": "generate",
         }
         return mapping.get(action)
 
@@ -74,9 +76,10 @@ class Executor:
         context = {}
         results = []
 
-        for step in plan.steps:  # ← MUST BE SEQUENTIAL
+        for step in plan.steps:
 
             tool = self.tools.get(step.action)
+            print("EXECUTOR PARALLEL TOOL:", step.action, tool)
 
             if not tool:
                 return ToolResult(success=False, error=f"Unknown tool {step.action}")
@@ -86,11 +89,24 @@ class Executor:
             try:
                 start = time.time()
 
-                if callable(tool):
+                # -------- ASYNC TOOL SUPPORT (CRITICAL FIX) --------
+                if hasattr(tool, "generate"):  # RAG
+                    result_text = await tool.generate(**inputs)
+
+                    return ToolResult(
+                        success=True, data={"_tool": "rag", "response": result_text}
+                    )
+
+                elif callable(tool):
                     result = tool(**inputs)
+
                 else:
                     method = getattr(tool, self._resolve_method(step.action))
-                    result = method(inputs)
+
+                    if asyncio.iscoroutinefunction(method):
+                        result = await method(inputs)
+                    else:
+                        result = method(inputs)
 
                 latency = int((time.time() - start) * 1000)
 
@@ -101,7 +117,7 @@ class Executor:
                 return result
 
             step_data = (result.data or {}).copy()
-            step_data["_tool"] = step.action
+            step_data.setdefault("_tool", step.action)
             step_data["_latency_ms"] = latency
 
             results.append(step_data)
