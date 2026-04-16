@@ -73,13 +73,8 @@ class Executor:
 
     async def execute_parallel(self, plan):
 
-        context = {}
-        results = []
-
-        for step in plan.steps:
-
+        async def _execute_step(step, context):
             tool = self.tools.get(step.action)
-            print("EXECUTOR PARALLEL TOOL:", step.action, tool)
 
             if not tool:
                 return ToolResult(success=False, error=f"Unknown tool {step.action}")
@@ -89,24 +84,28 @@ class Executor:
             try:
                 start = time.time()
 
-                # -------- ASYNC TOOL SUPPORT (CRITICAL FIX) --------
-                if hasattr(tool, "generate"):  # RAG
+                # -------- RAG --------
+                if step.action == "rag":
                     result_text = await tool.generate(**inputs)
 
+                    latency = int((time.time() - start) * 1000)
+
                     return ToolResult(
-                        success=True, data={"_tool": "rag", "response": result_text}
+                        success=True,
+                        data={
+                            "_tool": "rag",
+                            "response": result_text,
+                            "_latency_ms": latency,
+                        },
                     )
 
-                elif callable(tool):
-                    result = tool(**inputs)
+                # -------- OTHER TOOLS --------
+                method = getattr(tool, self._resolve_method(step.action))
 
+                if asyncio.iscoroutinefunction(method):
+                    result = await method(inputs)
                 else:
-                    method = getattr(tool, self._resolve_method(step.action))
-
-                    if asyncio.iscoroutinefunction(method):
-                        result = await method(inputs)
-                    else:
-                        result = method(inputs)
+                    result = method(inputs)
 
                 latency = int((time.time() - start) * 1000)
 
@@ -120,9 +119,19 @@ class Executor:
             step_data.setdefault("_tool", step.action)
             step_data["_latency_ms"] = latency
 
-            results.append(step_data)
+            return ToolResult(success=True, data=step_data)
 
-            if result.data:
-                context.update(result.data)
+        # -------- TRUE PARALLEL EXECUTION --------
+        tasks = [_execute_step(step, {}) for step in plan.steps]
 
-        return ToolResult(success=True, data={"steps": results})
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        final_steps = []
+
+        for res in results:
+            if isinstance(res, Exception) or not res or not res.success:
+                return res if isinstance(res, ToolResult) else ToolResult(success=False)
+
+            final_steps.append(res.data)
+
+        return ToolResult(success=True, data={"steps": final_steps})

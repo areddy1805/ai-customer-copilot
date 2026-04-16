@@ -1,35 +1,48 @@
 class ResponseComposer:
 
     def compose(self, results: list, intent: str) -> dict:
-        summary = None
+        summaries = []
         details = []
 
         for data in results:
+            if not data:
+                continue
+
             tool = data.get("_tool")
 
+            # -------- ORDER --------
             if tool == "order":
-                summary = f"Order {data.get('order_id')} is {data.get('status')}."
+                text = f"Order {data.get('order_id')} is {data.get('status')}."
+                summaries.append(text)
                 details.append({"type": "order", "data": data})
 
+            # -------- REFUND --------
             elif tool == "refund":
-                summary = f"Refund for {data.get('order_id')} is {data.get('status')}."
+                text = f"Refund for {data.get('order_id')} is {data.get('status')}."
+                summaries.append(text)
                 details.append({"type": "refund", "data": data})
 
+            # -------- TICKET --------
             elif tool == "ticket":
-                summary = f"Ticket {data.get('ticket_id')} is {data.get('status')}."
+                text = f"Ticket {data.get('ticket_id')} is {data.get('status')}."
+                summaries.append(text)
                 details.append({"type": "ticket", "data": data})
 
+            # -------- RAG --------
             elif tool == "rag":
                 if data.get("response"):
+                    summaries.append(data["response"])
                     details.append({"type": "rag", "data": data["response"]})
 
+            # -------- FALLBACK --------
             elif "response" in data:
+                summaries.append(data["response"])
                 details.append({"type": "rag", "data": data["response"]})
 
-        if not summary and details:
-            summary = details[0]["data"]
+        # -------- FINAL SUMMARY --------
+        summary = "\n".join(summaries) if summaries else "Unable to process request."
 
         return {
-            "summary": summary or "Unable to process request.",
+            "summary": summary,
             "details": details,
         }

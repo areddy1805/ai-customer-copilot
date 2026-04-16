@@ -19,10 +19,6 @@ class RefundTool:
             return json.load(f)
 
     def process_refund(self, input_data: Dict[str, Any]) -> ToolResponse:
-        """
-        Process refund using real data relationships:
-        orders + payments + refunds
-        """
         try:
             validated = RefundRequestInput(**input_data)
 
@@ -30,14 +26,33 @@ class RefundTool:
             payments = self._load_json(self.payments_path)
             refunds = self._load_json(self.refunds_path)
 
+            # -------- ORDER CHECK (AUTHORITATIVE) --------
             order = next(
                 (o for o in orders if o["order_id"] == validated.order_id), None
             )
 
             if not order:
-                return ToolResponse(success=False, error="Order not found")
+                return ToolResponse(
+                    success=True,
+                    data={
+                        "order_id": validated.order_id,
+                        "status": "failed",
+                        "reason": "Order not found",
+                    },
+                )
 
-            # -------- EXISTING REFUND (FIX) --------
+            # -------- VALIDATION (BUSINESS RULE) --------
+            if order["status"] != "delivered":
+                return ToolResponse(
+                    success=True,
+                    data={
+                        "order_id": validated.order_id,
+                        "status": "failed",
+                        "reason": "Order not delivered",
+                    },
+                )
+
+            # -------- EXISTING REFUND (ONLY AFTER VALIDATION) --------
             existing_refund = next(
                 (r for r in refunds if r["order_id"] == validated.order_id), None
             )
@@ -47,41 +62,49 @@ class RefundTool:
                     success=True,
                     data={
                         "order_id": validated.order_id,
-                        "status": existing_refund["status"],
-                        "amount": existing_refund["amount"],
-                        "mode": existing_refund["mode"],
-                        "_type": "refund",
+                        "status": existing_refund.get("status"),
+                        "amount": existing_refund.get("amount"),
+                        "mode": existing_refund.get("mode"),
                     },
                 )
 
-            # -------- VALIDATION --------
-            if order["status"] != "delivered":
-                return ToolResponse(
-                    success=False,
-                    error="Refund not allowed: Order not delivered",
-                )
-
+            # -------- PAYMENT CHECK --------
             payment = next(
                 (p for p in payments if p["order_id"] == validated.order_id), None
             )
 
             if not payment:
-                return ToolResponse(success=False, error="Payment record not found")
+                return ToolResponse(
+                    success=True,
+                    data={
+                        "order_id": validated.order_id,
+                        "status": "failed",
+                        "reason": "Payment record not found",
+                    },
+                )
 
             # -------- REFUND MODE --------
             refund_mode = (
-                "original_method" if payment["method"] == "prepaid" else "wallet"
+                "original_method" if payment.get("method") == "prepaid" else "wallet"
             )
 
             # -------- CREATE REFUND --------
-            refund_data = {
-                "order_id": validated.order_id,
-                "status": "initiated",
-                "amount": order["amount"],
-                "mode": refund_mode,
-            }
-
-            return ToolResponse(success=True, data=refund_data)
+            return ToolResponse(
+                success=True,
+                data={
+                    "order_id": validated.order_id,
+                    "status": "initiated",
+                    "amount": order.get("amount"),
+                    "mode": refund_mode,
+                },
+            )
 
         except Exception as e:
-            return ToolResponse(success=False, error=str(e))
+            return ToolResponse(
+                success=True,
+                data={
+                    "order_id": input_data.get("order_id"),
+                    "status": "failed",
+                    "reason": str(e),
+                },
+            )

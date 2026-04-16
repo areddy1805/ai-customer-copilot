@@ -14,7 +14,6 @@ async def event_stream(query: str, session_id: str):
         async for chunk in orch.run_stream(query, session_id):
             yield f"data: {chunk}\n\n"
 
-        # ---- END SIGNAL ----
         yield "data: [DONE]\n\n"
 
     except Exception as e:
@@ -30,17 +29,13 @@ async def stream_chat(query: str = Query(...), session_id: str = Query("default"
     )
 
 
-# -------- NORMAL CHAT (WITH DEBUG) --------
+# -------- NORMAL CHAT (TRACE ALWAYS EXPOSED) --------
 @router.post("/chat")
 async def chat(payload: dict):
     query = payload.get("query")
     session_id = payload.get("session_id", "default")
-    debug = payload.get("debug", False)
 
     state = await orch.run(query, session_id)
-
-    if not debug:
-        return {"response": state.final_response}
 
     return {
         "response": state.final_response,
@@ -49,6 +44,7 @@ async def chat(payload: dict):
         "route": state.metadata.get("route"),
         "plans": state.metadata.get("plans"),
         "trace_id": state.metadata.get("trace_id"),
+        "trace": state.metadata.get("trace", {}),
     }
 
 

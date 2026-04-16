@@ -139,6 +139,8 @@ class Orchestrator:
             if clear_session:
                 self.session_state.pop(session_id, None)
 
+            state.metadata["trace"] = state.trace
+
             return state
 
         try:
@@ -179,20 +181,37 @@ class Orchestrator:
                 self.metrics.inc("llm_cb_block")
                 tasks = [{"query": user_query, "type": "tool"}]
             else:
+                start = time.time()
+
                 try:
                     tasks = await self.decomposer.decompose(user_query)
+
+                    latency = int((time.time() - start) * 1000)
+                    self.metrics.observe("latency_decomposer", latency)
+                    state.trace["decomposer_ms"] = latency
+
                     self.llm_cb.record_success()
+
                 except Exception:
+                    latency = int((time.time() - start) * 1000)
+                    self.metrics.observe("latency_decomposer", latency)
+                    state.trace["decomposer_ms"] = latency
+
                     self.llm_cb.record_failure()
                     tasks = [{"query": user_query, "type": "tool"}]
+
             print("DECOMPOSED_TASKS:", tasks)
 
             memory_context = self._get_memory_context(session_id)
 
-            async def _safe_plan(t):
+            validated = []
+
+            for t in tasks:
                 if not self.llm_cb.allow():
                     self.metrics.inc("llm_cb_block")
-                    return None
+                    continue
+
+                start = time.time()
 
                 try:
                     plan = await self.planner.create_plan(
@@ -200,20 +219,23 @@ class Orchestrator:
                         t["query"],
                         memory_context,
                     )
+
+                    latency = int((time.time() - start) * 1000)
+                    self.metrics.observe("latency_planner", latency)
+                    state.trace["planner_ms"].append(latency)
+
                     self.llm_cb.record_success()
-                    return plan
 
                 except Exception:
+                    latency = int((time.time() - start) * 1000)
+                    self.metrics.observe("latency_planner", latency)
+                    state.trace["planner_ms"].append(latency)
+
                     self.llm_cb.record_failure()
-                    return None
-
-            plans = await asyncio.gather(*[_safe_plan(t) for t in tasks])
-
-            validated = []
-            for t, plan in zip(tasks, plans):
-                if not plan:
                     continue
+
                 plan, _ = self.plan_validator.validate(plan)
+
                 if plan:
                     validated.append((t, plan))
 
@@ -240,6 +262,7 @@ class Orchestrator:
                         continue
 
             print("FINAL_VALIDATED:", [t for t, _ in validated])
+            print("TRACE_AFTER_PLANNER:", state.trace)
 
             state.metadata["plans"] = []
 
@@ -248,9 +271,12 @@ class Orchestrator:
 
                 is_rag = any(step.action == "rag" for step in plan.steps)
 
+                tool_name = None  # enforce single attribution per task
+
                 # -------- CIRCUIT GUARD (EARLY) --------
                 if is_rag and not self.rag_cb.allow():
                     self.metrics.inc("rag_cb_block")
+                    state.trace["tools"].append("rag")
                     return None
 
                 cache_key = self._plan_cache_key(plan)
@@ -274,16 +300,45 @@ class Orchestrator:
                     # -------- L1: SEMANTIC CACHE --------
                     semantic_cached = self.semantic_cache.get(semantic_key)
                     if semantic_cached:
+                        tool_name = "rag"
+
+                        state.trace["cache"]["semantic_hit"] = True
+                        state.trace["cache"]["cache_hit"] = False
+                        state.trace["cache"]["executed"] = False
+                        state.trace["executor_ms"].append(0)
+                        state.trace["tools"].append(tool_name)
+
                         self.metrics.inc("semantic_hit")
+                        self.metrics.inc("tool_rag_calls")
+                        self.metrics.observe("tool_rag_latency", 0)
 
                         final = {"_tool": "rag", "response": semantic_cached}
+
                         self.inflight.set(cache_key, final)
                         return final
 
                     # -------- L2: REDIS CACHE --------
                     cached = self.cache.get(cache_key)
                     if cached:
+                        state.trace["cache"]["cache_hit"] = True
+                        state.trace["cache"]["semantic_hit"] = False
+                        state.trace["cache"]["executed"] = False
+                        state.trace["executor_ms"].append(0)
+
+                        if isinstance(cached, dict):
+                            if "steps" in cached and cached["steps"]:
+                                tool_name = cached["steps"][0].get("_tool")
+                            elif "_tool" in cached:
+                                tool_name = cached.get("_tool")
+
+                        if not tool_name:
+                            tool_name = "unknown"
+
+                        state.trace["tools"].append(tool_name)
+
                         self.metrics.inc("cache_hit")
+                        self.metrics.inc(f"tool_{tool_name}_calls")
+                        self.metrics.observe(f"tool_{tool_name}_latency", 0)
 
                         self.inflight.set(cache_key, cached)
                         return cached
@@ -293,6 +348,9 @@ class Orchestrator:
                     self.metrics.inc("execution_start")
 
                     # -------- EXECUTION --------
+                    start_exec = time.time()
+                    latency = None
+
                     try:
                         if is_rag:
                             try:
@@ -301,19 +359,41 @@ class Orchestrator:
                                     timeout=6,
                                 )
                             except asyncio.TimeoutError:
+                                latency = int((time.time() - start_exec) * 1000)
+                                self.metrics.observe("latency_executor", latency)
+                                state.trace["executor_ms"].append(latency)
+
                                 self.metrics.inc("execution_timeout")
                                 self.rag_cb.record_failure()
+
+                                state.trace["tools"].append("rag")
                                 return None
+
                             except Exception:
+                                latency = int((time.time() - start_exec) * 1000)
+                                self.metrics.observe("latency_executor", latency)
+                                state.trace["executor_ms"].append(latency)
+
                                 self.metrics.inc("execution_error")
                                 self.rag_cb.record_failure()
+
+                                state.trace["tools"].append("rag")
                                 return None
                         else:
                             result = await self.executor.execute_parallel(plan)
 
                     except Exception:
+                        latency = int((time.time() - start_exec) * 1000)
+                        self.metrics.observe("latency_executor", latency)
+                        state.trace["executor_ms"].append(latency)
+
                         self.metrics.inc("execution_error")
+                        state.trace["tools"].append("unknown")
                         return None
+
+                    latency = int((time.time() - start_exec) * 1000)
+                    self.metrics.observe("latency_executor", latency)
+                    state.trace["executor_ms"].append(latency)
 
                     # -------- FAILURE --------
                     if not result or not result.success:
@@ -328,13 +408,37 @@ class Orchestrator:
                             else "no_result"
                         )
 
+                        if plan.steps:
+                            tool_name = plan.steps[0].action
+                        else:
+                            tool_name = "unknown"
+
+                        if not tool_name:
+                            tool_name = "unknown"
+
+                        state.trace["tools"].append(tool_name)
+
                         if err == "Order not found":
                             return {"_tool": "order", "response": "Order not found."}
 
                         return None
 
+                    # -------- SUCCESS --------
                     self.metrics.inc("execution_success")
+                    state.trace["cache"]["executed"] = True
+
                     data = result.data
+
+                    # derive tool from plan (authoritative)
+                    if plan.steps:
+                        tool_name = plan.steps[0].action
+                    else:
+                        tool_name = "unknown"
+
+                    state.trace["tools"].append(tool_name)
+
+                    self.metrics.inc(f"tool_{tool_name}_calls")
+                    self.metrics.observe(f"tool_{tool_name}_latency", latency)
 
                     # -------- NORMALIZATION --------
                     if isinstance(data, dict) and "steps" in data:
@@ -410,6 +514,7 @@ class Orchestrator:
             )
 
             results = tool_results + rag_results
+            print("TRACE_AFTER_EXECUTION:", state.trace)
 
             # -------- MERGE --------
             all_results = []
