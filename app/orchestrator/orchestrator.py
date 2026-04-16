@@ -43,6 +43,9 @@ import json
 
 
 class Orchestrator:
+
+    MAX_AGENT_STEPS = 2
+
     def __init__(self, tools, llm, rag):
 
         # -------- CORE --------
@@ -140,7 +143,6 @@ class Orchestrator:
                 self.session_state.pop(session_id, None)
 
             state.metadata["trace"] = state.trace
-
             return state
 
         try:
@@ -174,380 +176,214 @@ class Orchestrator:
             state.metadata["route"] = "agentic"
             self.metrics.inc(f"intent_{intent}")
 
-            print("ENTERING AGENTIC FLOW")
-
             # -------- DECOMPOSE --------
             if not self.llm_cb.allow():
                 self.metrics.inc("llm_cb_block")
                 tasks = [{"query": user_query, "type": "tool"}]
             else:
                 start = time.time()
-
                 try:
                     tasks = await self.decomposer.decompose(user_query)
-
                     latency = int((time.time() - start) * 1000)
                     self.metrics.observe("latency_decomposer", latency)
                     state.trace["decomposer_ms"] = latency
-
                     self.llm_cb.record_success()
-
                 except Exception:
                     latency = int((time.time() - start) * 1000)
                     self.metrics.observe("latency_decomposer", latency)
                     state.trace["decomposer_ms"] = latency
-
                     self.llm_cb.record_failure()
                     tasks = [{"query": user_query, "type": "tool"}]
-
-            print("DECOMPOSED_TASKS:", tasks)
 
             memory_context = self._get_memory_context(session_id)
 
             validated = []
-
             for t in tasks:
                 if not self.llm_cb.allow():
                     self.metrics.inc("llm_cb_block")
                     continue
 
                 start = time.time()
-
                 try:
                     plan = await self.planner.create_plan(
                         self.classifier.classify(t["query"]),
                         t["query"],
                         memory_context,
                     )
-
                     latency = int((time.time() - start) * 1000)
                     self.metrics.observe("latency_planner", latency)
                     state.trace["planner_ms"].append(latency)
-
                     self.llm_cb.record_success()
-
                 except Exception:
                     latency = int((time.time() - start) * 1000)
                     self.metrics.observe("latency_planner", latency)
                     state.trace["planner_ms"].append(latency)
-
                     self.llm_cb.record_failure()
                     continue
 
                 plan, _ = self.plan_validator.validate(plan)
-
                 if plan:
                     validated.append((t, plan))
-
-            if not validated:
-                parts = [p.strip() for p in user_query.split(" and ") if p.strip()]
-                fallback_tasks = (
-                    [{"query": p, "type": "tool"} for p in parts]
-                    if parts
-                    else [{"query": user_query, "type": "tool"}]
-                )
-
-                validated = []
-                for t in fallback_tasks:
-                    try:
-                        plan = await self.planner.create_plan(
-                            self.classifier.classify(t["query"]),
-                            t["query"],
-                            memory_context,
-                        )
-                        plan, _ = self.plan_validator.validate(plan)
-                        if plan:
-                            validated.append((t, plan))
-                    except:
-                        continue
-
-            print("FINAL_VALIDATED:", [t for t, _ in validated])
-            print("TRACE_AFTER_PLANNER:", state.trace)
 
             state.metadata["plans"] = []
 
             # -------- EXECUTION UNIT --------
             async def _run_task(plan, original_query):
-
                 is_rag = any(step.action == "rag" for step in plan.steps)
 
-                tool_name = None  # enforce single attribution per task
-
-                # -------- CIRCUIT GUARD (EARLY) --------
-                if is_rag and not self.rag_cb.allow():
-                    self.metrics.inc("rag_cb_block")
-                    state.trace["tools"].append("rag")
-                    return None
+                tool_name = plan.steps[0].action if plan.steps else "unknown"
 
                 cache_key = self._plan_cache_key(plan)
                 owner = self.inflight.set_if_absent(cache_key)
 
-                # -------- INFLIGHT WAIT --------
                 if not owner:
-                    self.metrics.inc("inflight_wait")
-
                     for _ in range(20):
                         cached = self.inflight.get(cache_key)
                         if cached is not None:
                             return cached
                         await asyncio.sleep(0.1)
-
                     return None
 
                 try:
-                    semantic_key = original_query.lower().strip()
-
-                    # -------- L1: SEMANTIC CACHE --------
-                    semantic_cached = self.semantic_cache.get(semantic_key)
-                    if semantic_cached:
-                        tool_name = "rag"
-
-                        state.trace["cache"]["semantic_hit"] = True
-                        state.trace["cache"]["cache_hit"] = False
-                        state.trace["cache"]["executed"] = False
-                        state.trace["executor_ms"].append(0)
-                        state.trace["tools"].append(tool_name)
-
-                        self.metrics.inc("semantic_hit")
-                        self.metrics.inc("tool_rag_calls")
-                        self.metrics.observe("tool_rag_latency", 0)
-
-                        final = {"_tool": "rag", "response": semantic_cached}
-
-                        self.inflight.set(cache_key, final)
-                        return final
-
-                    # -------- L2: REDIS CACHE --------
+                    # -------- CACHE --------
                     cached = self.cache.get(cache_key)
                     if cached:
                         state.trace["cache"]["cache_hit"] = True
-                        state.trace["cache"]["semantic_hit"] = False
-                        state.trace["cache"]["executed"] = False
                         state.trace["executor_ms"].append(0)
-
-                        if isinstance(cached, dict):
-                            if "steps" in cached and cached["steps"]:
-                                tool_name = cached["steps"][0].get("_tool")
-                            elif "_tool" in cached:
-                                tool_name = cached.get("_tool")
-
-                        if not tool_name:
-                            tool_name = "unknown"
-
                         state.trace["tools"].append(tool_name)
-
-                        self.metrics.inc("cache_hit")
-                        self.metrics.inc(f"tool_{tool_name}_calls")
-                        self.metrics.observe(f"tool_{tool_name}_latency", 0)
-
-                        self.inflight.set(cache_key, cached)
                         return cached
-
-                    # -------- MISS --------
-                    self.metrics.inc("cache_miss")
-                    self.metrics.inc("execution_start")
 
                     # -------- EXECUTION --------
                     start_exec = time.time()
-                    latency = None
 
-                    try:
-                        if is_rag:
-                            try:
-                                result = await asyncio.wait_for(
-                                    self.executor.execute_parallel(plan),
-                                    timeout=6,
-                                )
-                            except asyncio.TimeoutError:
-                                latency = int((time.time() - start_exec) * 1000)
-                                self.metrics.observe("latency_executor", latency)
-                                state.trace["executor_ms"].append(latency)
-
-                                self.metrics.inc("execution_timeout")
-                                self.rag_cb.record_failure()
-
-                                state.trace["tools"].append("rag")
-                                return None
-
-                            except Exception:
-                                latency = int((time.time() - start_exec) * 1000)
-                                self.metrics.observe("latency_executor", latency)
-                                state.trace["executor_ms"].append(latency)
-
-                                self.metrics.inc("execution_error")
-                                self.rag_cb.record_failure()
-
-                                state.trace["tools"].append("rag")
-                                return None
-                        else:
-                            result = await self.executor.execute_parallel(plan)
-
-                    except Exception:
-                        latency = int((time.time() - start_exec) * 1000)
-                        self.metrics.observe("latency_executor", latency)
-                        state.trace["executor_ms"].append(latency)
-
-                        self.metrics.inc("execution_error")
-                        state.trace["tools"].append("unknown")
-                        return None
+                    result = await self.executor.execute_parallel(plan)
 
                     latency = int((time.time() - start_exec) * 1000)
-                    self.metrics.observe("latency_executor", latency)
+
                     state.trace["executor_ms"].append(latency)
+                    state.trace["tools"].append(tool_name)
+                    state.trace["cache"]["executed"] = True
 
                     # -------- FAILURE --------
                     if not result or not result.success:
-                        self.metrics.inc("execution_error")
+                        err = getattr(result, "error", "unknown")
 
-                        if is_rag:
-                            self.rag_cb.record_failure()
-
-                        err = (
-                            getattr(result, "error", "unknown_failure")
-                            if result
-                            else "no_result"
-                        )
-
-                        if plan.steps:
-                            tool_name = plan.steps[0].action
-                        else:
-                            tool_name = "unknown"
-
-                        if not tool_name:
-                            tool_name = "unknown"
-
-                        state.trace["tools"].append(tool_name)
-
-                        if err == "Order not found":
-                            return {"_tool": "order", "response": "Order not found."}
-
-                        return None
-
-                    # -------- SUCCESS --------
-                    self.metrics.inc("execution_success")
-                    state.trace["cache"]["executed"] = True
-
-                    data = result.data
-
-                    # derive tool from plan (authoritative)
-                    if plan.steps:
-                        tool_name = plan.steps[0].action
-                    else:
-                        tool_name = "unknown"
-
-                    state.trace["tools"].append(tool_name)
-
-                    self.metrics.inc(f"tool_{tool_name}_calls")
-                    self.metrics.observe(f"tool_{tool_name}_latency", latency)
-
-                    # -------- NORMALIZATION --------
-                    if isinstance(data, dict) and "steps" in data:
-                        final = {
-                            "steps": [
-                                (
-                                    {"_tool": "rag", "response": s["response"]}
-                                    if s.get("_tool") == "rag" and s.get("response")
-                                    else s
-                                )
-                                for s in data["steps"]
-                            ]
+                        return {
+                            "_tool": tool_name,
+                            "order_id": plan.steps[0].params.get("order_id"),
+                            "status": "failed",
+                            "reason": err,
                         }
 
-                    elif isinstance(data, dict) and data.get("_tool") == "rag":
-                        final = (
-                            data
-                            if data.get("response")
-                            else {
-                                "_tool": "rag",
-                                "response": "No relevant information found.",
-                            }
-                        )
+                    # -------- SUCCESS --------
+                    data = result.data
 
-                    elif isinstance(data, str):
-                        final = {"_tool": "rag", "response": data}
-
-                    elif isinstance(data, dict) and "response" in data:
-                        final = {"_tool": "rag", "response": data["response"]}
-
+                    if isinstance(data, dict) and "steps" in data:
+                        final = data["steps"]
                     else:
-                        final = None
+                        final = [data]
 
-                    # -------- STORE --------
-                    if final:
-                        self.cache.set(cache_key, final)
-                        self.metrics.inc("cache_store")
+                    self.cache.set(cache_key, final)
 
-                        if is_rag:
-                            self.rag_cb.record_success()
-
-                            if final.get("_tool") == "rag" and final.get("response"):
-                                self.semantic_cache.set(semantic_key, final["response"])
-                                self.metrics.inc("semantic_store")
-                    else:
-                        if is_rag:
-                            self.rag_cb.record_failure()
-
-                    self.inflight.set(cache_key, final)
                     return final
 
                 finally:
                     if owner:
                         self.inflight.delete(cache_key)
 
-            # -------- SPLIT --------
-            tool_tasks, rag_tasks = [], []
-
-            for t, plan in validated:
-                state.metadata["plans"].append([str(step) for step in plan.steps])
-
-                if t["type"] == "rag":
-                    rag_tasks.append(_run_task(plan, t["query"]))
-                else:
-                    tool_tasks.append(_run_task(plan, t["query"]))
-
-            # -------- EXECUTE --------
-            tool_results = await asyncio.gather(*tool_tasks, return_exceptions=True)
-            rag_results = (
-                await asyncio.gather(*rag_tasks, return_exceptions=True)
-                if rag_tasks
-                else []
-            )
-
-            results = tool_results + rag_results
-            print("TRACE_AFTER_EXECUTION:", state.trace)
-
-            # -------- MERGE --------
+            # -------- AGENT LOOP --------
             all_results = []
-            for res in results:
-                if isinstance(res, Exception) or not res:
-                    continue
+            state.trace["iterations"] = []
 
-                if isinstance(res, dict) and "steps" in res:
-                    all_results.extend(res["steps"])
-                    continue
+            # -------- TASK ORDER (USER INTENT ORDER) --------
+            task_order = {}
 
-                if isinstance(res, dict) and "_tool" not in res and "response" in res:
-                    res["_tool"] = "rag"
+            for idx, (t, plan) in enumerate(validated):
+                action = plan.steps[0].action if plan.steps else "unknown"
+                order_id = plan.steps[0].params.get("order_id")
+                task_order[(action, order_id)] = idx
 
-                all_results.append(res)
+            def _key(x):
+                return (x.get("_tool"), x.get("order_id"), x.get("ticket_id"))
+
+            for step_idx in range(self.MAX_AGENT_STEPS):
+
+                iteration_trace = {"step": step_idx, "plans": [], "results": []}
+
+                # -------- PLAN ORDERING (DEPENDENCY) --------
+                ordered_tasks = []
+                deferred_tasks = []
+
+                for t, plan in validated:
+                    state.metadata["plans"].append([str(step) for step in plan.steps])
+                    iteration_trace["plans"].append([str(step) for step in plan.steps])
+
+                    action = plan.steps[0].action if plan.steps else "unknown"
+
+                    if action == "order":
+                        ordered_tasks.append((t, plan))
+                    elif action == "refund":
+                        deferred_tasks.append((t, plan))
+                    else:
+                        ordered_tasks.append((t, plan))
+
+                iteration_results = []
+
+                # -------- EXECUTE ORDER TASKS --------
+                for t, plan in ordered_tasks:
+                    res = await _run_task(plan, t["query"])
+
+                    if isinstance(res, list):
+                        iteration_results.extend(res)
+                    elif res:
+                        iteration_results.append(res)
+
+                # -------- EXECUTE DEFERRED TASKS --------
+                for t, plan in deferred_tasks:
+                    res = await _run_task(plan, t["query"])
+
+                    if isinstance(res, list):
+                        iteration_results.extend(res)
+                    elif res:
+                        iteration_results.append(res)
+
+                # -------- TRACE --------
+                iteration_trace["results"] = iteration_results
+                state.trace["iterations"].append(iteration_trace)
+
+                # -------- DEDUP + USER-ORDERED MERGE --------
+                existing = {_key(r): r for r in all_results}
+
+                for r in iteration_results:
+                    existing[_key(r)] = r
+
+                all_results = sorted(
+                    existing.values(),
+                    key=lambda x: task_order.get(
+                        (x.get("_tool"), x.get("order_id")), 999
+                    ),
+                )
+
+                # -------- STOP CONDITION --------
+                has_success = any(
+                    isinstance(r, dict) and r.get("status") not in ["failed", None]
+                    for r in iteration_results
+                )
+
+                break  # bounded single-pass
 
             # -------- RESPONSE --------
             structured = self.response_composer.compose(all_results, state.intent)
 
-            response = structured["summary"]
-
-            # -------- GLOBAL FAILURE DETECTION --------
             if not all_results:
-                self.metrics.inc("execution_error")
-
                 return _exit("Unable to process request.", "failure", "empty_response")
 
             state.metadata["details"] = structured["details"]
 
             self.memory.add_message(session_id, "user", user_query)
-            self.memory.add_message(session_id, "assistant", response)
+            self.memory.add_message(session_id, "assistant", structured["summary"])
 
-            return _exit(response, clear_session=True)
+            return _exit(structured["summary"], clear_session=True)
 
         finally:
             pass
