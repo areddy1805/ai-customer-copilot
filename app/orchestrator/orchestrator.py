@@ -21,32 +21,47 @@ from app.security.circuit_breaker import CircuitBreaker
 from app.utils.retry import retry
 from app.observability.metrics import Metrics
 from app.guard.response_validator import ResponseValidator
+from app.cache.semantic_cache import SemanticCache
+from app.rag.embedder import Embedder
 
-# from app.rag.embedder import Embedder
-# from app.cache.semantic_cache import SemanticCache
 from app.orchestrator.planner import Planner
 from app.orchestrator.plan import Plan, Step
 from app.orchestrator.executor import Executor
 from app.orchestrator.plan_validator import PlanValidator
 from app.orchestrator.decomposer import Decomposer
+from app.orchestrator.response_composer import ResponseComposer
+
+from app.tools.rag_tool import RAGTool
 
 from app.core.error_mapper import ErrorMapper
 
 
 import re
 import time
+import hashlib
+import json
 
 
 class Orchestrator:
-    def __init__(self):
+
+    MAX_AGENT_STEPS = 2
+
+    def __init__(self, tools, llm, rag):
+
+        # -------- CORE --------
+        self.tools = tools
+        self.llm = llm
+        self.rag = rag
+
         self.classifier = IntentClassifier()
         self.router = Router()
-        self.llm = LLMService()
+
         self.memory = MemoryService()
-        self.rag = RAGService()
-        self.order_tool = OrderTool()
-        self.refund_tool = RefundTool()
-        self.ticket_tool = TicketTool()
+
+        self.planner = Planner(self.llm)
+        self.decomposer = Decomposer(self.llm)
+        self.response_composer = ResponseComposer()
+
         self.guard = PolicyGuard()
         self.escalation = EscalationService()
         self.logger = Logger()
@@ -54,6 +69,8 @@ class Orchestrator:
         self.cache = ResponseCache()
         self.rate_limiter = RateLimiter()
         self.inflight = InFlightRegistry()
+        self.embedder = Embedder()
+        self.semantic_cache = SemanticCache(self.embedder)
         self.concurrent = ConcurrencyLimiter(max_concurrent=5)
 
         self.llm_cb = CircuitBreaker()
@@ -65,40 +82,22 @@ class Orchestrator:
         self.metrics = Metrics()
         self.validator = ResponseValidator()
 
-        # self.embedder = Embedder()
-        # self.semantic_cache = SemanticCache(self.embedder)
-
-        self.planner = Planner()
-        self.executor = Executor(
-            {
-                "order": self.order_tool,
-                "refund": self.refund_tool,
-                "ticket": self.ticket_tool,
-                "extract_order_id": self._extract_order_id,
-                "ask_order_id": self._ask_order_id,
-                "rag": self,
-            }
-        )
+        # -------- EXECUTOR --------
+        self.executor = Executor(self.tools)
 
         self.plan_validator = PlanValidator()
-        self.decomposer = Decomposer()
 
-        # self.semantic_cache.store = []
         self.session_state = {}
 
     # ================= RUN =================
+
     async def run(self, user_query: str, session_id: str) -> ConversationState:
         self.metrics.inc("requests_total")
         start_time = time.time()
+
         state = ConversationState(user_query=user_query)
         trace_id = str(uuid.uuid4())
         state.metadata["trace_id"] = trace_id
-
-        cache_key = f"{session_id}:{user_query}"
-
-        cached = self.cache.get(cache_key)
-        if cached:
-            return _exit(cached)
 
         def _to_str(resp):
             if isinstance(resp, str):
@@ -121,17 +120,12 @@ class Orchestrator:
             else:
                 self.metrics.inc("requests_failure")
 
-            if error == "user_requested_human":
-                self.metrics.inc("requests_escalated")
-
             if error:
                 mapped = ErrorMapper.map(error)
                 self.metrics.inc(f"error_type_{mapped['error_type']}")
                 self.metrics.inc(f"error_code_{mapped['error_code']}")
 
             self.metrics.observe("total_latency", latency)
-
-            mapped_error = ErrorMapper.map(error) if error else None
 
             self.logger.log_request(
                 session_id=session_id,
@@ -142,31 +136,24 @@ class Orchestrator:
                 tools_used=self._extract_tools(state.metadata.get("plans")),
                 latency_ms=latency,
                 status=status,
-                error=mapped_error,
+                error=error,
             )
 
             if clear_session:
                 self.session_state.pop(session_id, None)
 
+            state.metadata["trace"] = state.trace
             return state
 
         try:
             # -------- RATE LIMIT --------
             if not self.rate_limiter.allow(session_id):
-                return _exit(
-                    "Too many requests. Please try again later.",
-                    "failure",
-                    "rate_limit",
-                )
+                return _exit("Too many requests.", "failure", "rate_limit")
 
             # -------- GUARD --------
             guard = self.guard.evaluate(user_query, "unknown")
             if not guard["allowed"]:
-                return _exit(
-                    "Your request cannot be processed due to security or validation constraints.",
-                    "failure",
-                    "guard_block",
-                )
+                return _exit("Request blocked.", "failure", "guard_block")
 
             # -------- HUMAN --------
             if any(
@@ -181,264 +168,222 @@ class Orchestrator:
                 self._escalate(
                     session_id, user_query, "human_request", "User requested human"
                 )
-                return _exit(
-                    "Connecting you to a support agent.",
-                    "failure",
-                    "user_requested_human",
-                )
+                return _exit("Connecting to agent.", "failure", "user_requested_human")
 
-            # -------- SLOT RESOLUTION --------
-            pending = self.session_state.get(session_id)
-            if pending:
-                order_id = self._extract_order_id(user_query)
-                if order_id:
-                    user_query = f"{pending['intent']} {order_id}"
-                    intent = pending["intent"]
-                else:
-                    return _exit("Please provide a valid order ID.", "failure")
-            else:
-                intent = self.classifier.classify(user_query)
-
-            q_lower = user_query.lower()
-
-            # -------- STRONG INTENT PRIORITY --------
-            if not pending:
-                if any(
-                    k in q_lower for k in ["refund policy", "return policy", "policy"]
-                ):
-                    intent = "refund_policy"
-                elif "refund" in q_lower or "refnd" in q_lower:
-                    intent = "refund_request"
-                elif "order" in q_lower or "track" in q_lower:
-                    intent = "order_status"
-                elif "ticket" in q_lower or "issue" in q_lower:
-                    intent = "create_ticket"
-
-            # -------- FINAL INTENT NORMALIZATION (LOCK) --------
-            if any(k in q_lower for k in ["refund policy", "return policy", "policy"]):
-                intent = "refund_policy"
-
+            # -------- INTENT --------
+            intent = self.classifier.classify(user_query)
             state.intent = intent
+            state.metadata["route"] = "agentic"
             self.metrics.inc(f"intent_{intent}")
 
-            state.metadata["route"] = "rag" if intent == "refund_policy" else "tool"
-            print("DEBUG_INTENT:", intent, "| QUERY:", user_query)
-            if intent == "refund_policy":
+            # -------- DECOMPOSE --------
+            if not self.llm_cb.allow():
+                self.metrics.inc("llm_cb_block")
+                tasks = [{"query": user_query, "type": "tool"}]
+            else:
+                start = time.time()
                 try:
-
-                    async def safe_rag():
-                        return await asyncio.wait_for(
-                            retry(self.rag.generate)(user_query), timeout=10
-                        )
-
-                    if not self.rag_cb.allow():
-                        raise Exception("RAG circuit open")
-
-                    try:
-                        response = await safe_rag()
-                        self.rag_cb.record_success()
-
-                    except Exception:
-                        self.rag_cb.record_failure()
-                        raise
-
-                    bad = (
-                        not response
-                        or len(response.strip()) < 15
-                        or any(
-                            k in response.lower()
-                            for k in [
-                                "more specific",
-                                "more details",
-                                "provide more",
-                                "not enough",
-                                "no relevant",
-                                "not found",
-                            ]
-                        )
-                    )
-
-                    if bad:
-                        return _exit(
-                            "A customer is eligible for a refund if the order is cancelled before shipment, returned within 7 days of delivery, or received damaged or defective."
-                        )
-
-                    return _exit(response)
-
+                    tasks = await self.decomposer.decompose(user_query)
+                    latency = int((time.time() - start) * 1000)
+                    self.metrics.observe("latency_decomposer", latency)
+                    state.trace["decomposer_ms"] = latency
+                    self.llm_cb.record_success()
                 except Exception:
-                    return _exit(
-                        "A customer is eligible for a refund if the order is cancelled before shipment, returned within 7 days of delivery, or received damaged or defective."
-                    )
+                    latency = int((time.time() - start) * 1000)
+                    self.metrics.observe("latency_decomposer", latency)
+                    state.trace["decomposer_ms"] = latency
+                    self.llm_cb.record_failure()
+                    tasks = [{"query": user_query, "type": "tool"}]
 
-            # -------- GENERAL --------
-            if intent == "general" and not pending:
-                return _exit(
-                    "I can help with order tracking, refunds, or delivery issues."
-                )
-
-            # -------- MULTI-INTENT SPLIT --------
-            parts = [p.strip() for p in user_query.split(" and ") if p.strip()]
-
-            rag_response = None
-            tool_parts = []
-
-            for part in parts:
-                if "refund policy" in part.lower():
-                    rag_response = await self.rag.generate(part)
-                else:
-                    tool_parts.append(part)
-
-            # -------- SLOT (TOP LEVEL) --------
-            order_id = self._extract_order_id(user_query)
-            if (
-                intent
-                in ["order_status", "refund_request", "create_ticket", "delivery_issue"]
-                and not order_id
-            ):
-                if not self.session_state.get(session_id):
-                    self.session_state[session_id] = {"intent": intent}
-
-                msg = {
-                    "order_status": "Please provide your order ID to check order status.",
-                    "refund_request": "Please provide your order ID to process refund request.",
-                }.get(intent, "Please provide your order ID to create a ticket.")
-
-                return _exit(msg)
-
-            # -------- MEMORY --------
             memory_context = self._get_memory_context(session_id)
 
-            all_results = []
+            validated = []
+            for t in tasks:
+                if not self.llm_cb.allow():
+                    self.metrics.inc("llm_cb_block")
+                    continue
+
+                start = time.time()
+                try:
+                    plan = await self.planner.create_plan(
+                        self.classifier.classify(t["query"]),
+                        t["query"],
+                        memory_context,
+                    )
+                    latency = int((time.time() - start) * 1000)
+                    self.metrics.observe("latency_planner", latency)
+                    state.trace["planner_ms"].append(latency)
+                    self.llm_cb.record_success()
+                except Exception:
+                    latency = int((time.time() - start) * 1000)
+                    self.metrics.observe("latency_planner", latency)
+                    state.trace["planner_ms"].append(latency)
+                    self.llm_cb.record_failure()
+                    continue
+
+                plan, _ = self.plan_validator.validate(plan)
+                if plan:
+                    validated.append((t, plan))
+
             state.metadata["plans"] = []
 
-            async def _run_task(task):
-                plan = self.planner.create_plan(intent, task, memory_context)
-                state.metadata["plans"].append([str(step) for step in plan.steps])
+            # -------- EXECUTION UNIT --------
+            async def _run_task(plan, original_query):
+                is_rag = any(step.action == "rag" for step in plan.steps)
 
-                async def safe_execute():
-                    return await asyncio.wait_for(
-                        retry(self.executor.execute_parallel)(plan), timeout=10
-                    )
+                tool_name = plan.steps[0].action if plan.steps else "unknown"
 
-                if not self.rag_cb.allow():
-                    raise Exception("RAG circuit open")
+                cache_key = self._plan_cache_key(plan)
+                owner = self.inflight.set_if_absent(cache_key)
+
+                if not owner:
+                    for _ in range(20):
+                        cached = self.inflight.get(cache_key)
+                        if cached is not None:
+                            return cached
+                        await asyncio.sleep(0.1)
+                    return None
 
                 try:
-                    result = await safe_execute()
-                    self.rag_cb.record_success()
+                    # -------- CACHE --------
+                    cached = self.cache.get(cache_key)
+                    if cached:
+                        state.trace["cache"]["cache_hit"] = True
+                        state.trace["executor_ms"].append(0)
+                        state.trace["tools"].append(tool_name)
+                        return cached
 
-                except Exception as e:
-                    self.rag_cb.record_failure()
-                    raise e
+                    # -------- EXECUTION --------
+                    start_exec = time.time()
 
-                if not result or not result.success:
-                    error = (
-                        getattr(result, "error", "unknown_failure")
-                        if result
-                        else "no_result"
-                    )
+                    result = await self.executor.execute_parallel(plan)
 
-                    if error == "Order not found":
+                    latency = int((time.time() - start_exec) * 1000)
+
+                    state.trace["executor_ms"].append(latency)
+                    state.trace["tools"].append(tool_name)
+                    state.trace["cache"]["executed"] = True
+
+                    # -------- FAILURE --------
+                    if not result or not result.success:
+                        err = getattr(result, "error", "unknown")
+
                         return {
-                            "response": f"Order {order_id} not found. Please check your order ID."
+                            "_tool": tool_name,
+                            "order_id": plan.steps[0].params.get("order_id"),
+                            "status": "failed",
+                            "reason": err,
                         }
-                    elif "not delivered" in error.lower():
-                        oid = self._extract_order_id(task)
-                        return {
-                            "response": f"Refund status for order {oid} is pending."
-                        }
+
+                    # -------- SUCCESS --------
+                    data = result.data
+
+                    if isinstance(data, dict) and "steps" in data:
+                        final = data["steps"]
                     else:
-                        return "__ESCALATE__", intent, error
+                        final = [data]
 
-                return result.data
+                    self.cache.set(cache_key, final)
 
-            results = await asyncio.gather(
-                *[_run_task(t) for t in tool_parts or [user_query]]
-            )
+                    return final
 
-            for res in results:
-                if isinstance(res, tuple) and res[0] == "__ESCALATE__":
-                    _, t_intent, error = res
-                    self._escalate(session_id, user_query, t_intent, error)
-                    return _exit(
-                        "Your request has been escalated to a support agent.",
-                        "failure",
-                        error,
-                    )
+                finally:
+                    if owner:
+                        self.inflight.delete(cache_key)
 
-                if "steps" in res:
-                    for step in res["steps"]:
-                        if "_tool" in step:
-                            self.metrics.observe(
-                                f"tool_{step['_tool']}_latency", step["_latency_ms"]
-                            )
-                        all_results.append(step)
-                else:
-                    all_results.append(res)
+            # -------- AGENT LOOP --------
+            all_results = []
+            state.trace["iterations"] = []
 
-            responses = []
+            # -------- TASK ORDER (USER INTENT ORDER) --------
+            task_order = {}
 
-            if rag_response:
-                responses.append(rag_response)
+            for idx, (t, plan) in enumerate(validated):
+                action = plan.steps[0].action if plan.steps else "unknown"
+                order_id = plan.steps[0].params.get("order_id")
+                task_order[(action, order_id)] = idx
 
-            if intent == "refund_request":
-                refund_outputs = []
-                order_fallbacks = []
+            def _key(x):
+                return (x.get("_tool"), x.get("order_id"), x.get("ticket_id"))
 
-                for data in all_results:
-                    tool = data.get("_tool")
+            for step_idx in range(self.MAX_AGENT_STEPS):
 
-                    if tool == "refund":
-                        refund_outputs.append(
-                            f"Refund status for order {data.get('order_id')} is {data.get('status')}."
-                        )
+                iteration_trace = {"step": step_idx, "plans": [], "results": []}
 
-                    elif tool == "order":
-                        order_fallbacks.append(
-                            f"Your order {data.get('order_id')} is {data.get('status')} and expected by {data.get('delivery_eta')}."
-                        )
+                # -------- PLAN ORDERING (DEPENDENCY) --------
+                ordered_tasks = []
+                deferred_tasks = []
 
-                    elif "response" in data:
-                        refund_outputs.append(data["response"])
+                for t, plan in validated:
+                    state.metadata["plans"].append([str(step) for step in plan.steps])
+                    iteration_trace["plans"].append([str(step) for step in plan.steps])
 
-                # priority: refunds > fallback
-                responses.extend(refund_outputs if refund_outputs else order_fallbacks)
+                    action = plan.steps[0].action if plan.steps else "unknown"
 
-            else:
-                for data in all_results:
-                    tool = data.get("_tool")
+                    if action == "order":
+                        ordered_tasks.append((t, plan))
+                    elif action == "refund":
+                        deferred_tasks.append((t, plan))
+                    else:
+                        ordered_tasks.append((t, plan))
 
-                    if tool == "order":
-                        responses.append(
-                            f"Your order {data.get('order_id')} is {data.get('status')} and expected by {data.get('delivery_eta')}."
-                        )
-                    elif "ticket_id" in data:
-                        responses.append(
-                            f"Ticket {data.get('ticket_id')} for order {data.get('order_id')} is currently {data.get('status')}."
-                        )
-                    elif "response" in data:
-                        responses.append(data["response"])
+                iteration_results = []
 
-            response = " ".join(
-                sorted(
-                    responses,
-                    key=lambda x: (
-                        x.split("order ")[1].split(" ")[0] if "order" in x else x
+                # -------- EXECUTE ORDER TASKS --------
+                for t, plan in ordered_tasks:
+                    res = await _run_task(plan, t["query"])
+
+                    if isinstance(res, list):
+                        iteration_results.extend(res)
+                    elif res:
+                        iteration_results.append(res)
+
+                # -------- EXECUTE DEFERRED TASKS --------
+                for t, plan in deferred_tasks:
+                    res = await _run_task(plan, t["query"])
+
+                    if isinstance(res, list):
+                        iteration_results.extend(res)
+                    elif res:
+                        iteration_results.append(res)
+
+                # -------- TRACE --------
+                iteration_trace["results"] = iteration_results
+                state.trace["iterations"].append(iteration_trace)
+
+                # -------- DEDUP + USER-ORDERED MERGE --------
+                existing = {_key(r): r for r in all_results}
+
+                for r in iteration_results:
+                    existing[_key(r)] = r
+
+                all_results = sorted(
+                    existing.values(),
+                    key=lambda x: task_order.get(
+                        (x.get("_tool"), x.get("order_id")), 999
                     ),
                 )
-            )
 
-            if not responses:
-                responses.append("Unable to process refund request. Please try again.")
+                # -------- STOP CONDITION --------
+                has_success = any(
+                    isinstance(r, dict) and r.get("status") not in ["failed", None]
+                    for r in iteration_results
+                )
+
+                break  # bounded single-pass
+
+            # -------- RESPONSE --------
+            structured = self.response_composer.compose(all_results, state.intent)
+
+            if not all_results:
+                return _exit("Unable to process request.", "failure", "empty_response")
+
+            state.metadata["details"] = structured["details"]
 
             self.memory.add_message(session_id, "user", user_query)
-            self.memory.add_message(session_id, "assistant", response)
+            self.memory.add_message(session_id, "assistant", structured["summary"])
 
-            if response.strip():
-                self.cache.set(cache_key, response)
-                return _exit(response, clear_session=True)
-            else:
-                return _exit("Something went wrong.")
+            return _exit(structured["summary"], clear_session=True)
 
         finally:
             pass
@@ -479,7 +424,6 @@ class Orchestrator:
 
         for token in response.split(" "):
             yield token + " "
-            await asyncio.sleep(0.02)
 
     # ================= HELPERS =================
     def _extract_tools(self, plans):
@@ -531,3 +475,15 @@ class Orchestrator:
             success=True,
             data={"response": "Please provide your order ID to proceed."},
         )
+
+    def _plan_cache_key(self, plan: Plan):
+        steps = [
+            {
+                "action": step.action,
+                "params": step.params,
+            }
+            for step in plan.steps
+        ]
+
+        raw = json.dumps(steps, sort_keys=True)
+        return hashlib.md5(raw.encode()).hexdigest()

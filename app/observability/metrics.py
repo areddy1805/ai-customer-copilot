@@ -18,11 +18,11 @@ class Metrics:
     def snapshot(self):
         result = {}
 
-        # counters
+        # -------- COUNTERS --------
         for k, v in self.counters.items():
             result[k] = v
 
-        # latency stats
+        # -------- LATENCY STATS --------
         for k, values in self.latencies.items():
             if not values:
                 continue

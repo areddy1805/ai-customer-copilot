@@ -6,7 +6,6 @@ from app.llm.providers.azure_provider import AzureProvider
 
 
 def get_llm_provider():
-
     secret_provider = get_secret_provider()
 
     if settings.LLM_PROVIDER == "azure":

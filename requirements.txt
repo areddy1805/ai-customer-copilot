@@ -94,14 +94,15 @@ rich==13.7.1
 # AZURE — AI / SEARCH
 # =========================
 azure-search-documents>=11.6.0
-azure-identity>=1.16.0
 
 # =========================
 # AZURE — PLATFORM SERVICES
 # =========================
 azure-storage-blob>=12.20.0
-azure-keyvault-secrets>=4.8.0
-azure-identity==1.25.3
+azure-keyvault-secrets==4.8.0
+cryptography==41.0.7
+azure-identity==1.15.0
+azure-core==1.30.0
 
 # =========================
 # AZURE — DOCUMENT INTELLIGENCE
@@ -111,4 +112,4 @@ azure-ai-documentintelligence>=1.0.0b3
 # =========================
 # RESILIENCE
 # =========================
-tenacity>=8.2.3
+tenacity>=8.3.0

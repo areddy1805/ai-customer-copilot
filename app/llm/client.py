@@ -1,6 +1,5 @@
 import requests
 import json
-from typing import Optional, Generator
 from app.core.config import settings
 
 
@@ -8,79 +7,71 @@ class OllamaClient:
     def __init__(self):
         self.base_url = settings.OLLAMA_BASE_URL
 
-    def generate(
-        self, model: str, prompt: str, stream: bool = False, timeout: int = 60
+    async def generate(
+        self,
+        prompt: str,
+        model: str,
+        temperature: float = 0,
+        max_tokens: int = 200,
+        timeout: int = 60,
     ) -> str:
-
-        if not isinstance(prompt, str):
-            raise ValueError(f"Prompt must be string, got {type(prompt)}")
 
         url = f"{self.base_url}/api/generate"
 
         payload = {
             "model": model,
             "prompt": prompt,
-            "stream": stream,
-            "options": {"temperature": 0.2, "num_predict": 100},
+            "stream": False,
+            "options": {
+                "temperature": temperature,
+                "num_predict": max_tokens,
+            },
         }
 
-        try:
-            response = requests.post(url, json=payload, timeout=timeout)
+        response = requests.post(url, json=payload, timeout=timeout)
 
-            if response.status_code != 200:
-                raise Exception(f"Ollama error: {response.text}")
+        if response.status_code != 200:
+            raise Exception(f"Ollama error: {response.text}")
 
-            data = response.json()
-            return data.get("response", "")
+        return response.json().get("response", "").strip()
 
-        except requests.exceptions.Timeout:
-            raise Exception("LLM request timed out")
-
-        except requests.exceptions.RequestException as e:
-            raise Exception(f"LLM request failed: {str(e)}")
-
-    def generate_stream(self, model: str, prompt: str, timeout: int = 60):
-
-        if not isinstance(prompt, str):
-            raise ValueError(f"Prompt must be string, got {type(prompt)}")
-
+    async def stream(
+        self,
+        prompt: str,
+        model: str,
+        temperature: float = 0,
+        max_tokens: int = 200,
+        timeout: int = 60,
+    ):
         url = f"{self.base_url}/api/generate"
 
         payload = {
             "model": model,
             "prompt": prompt,
             "stream": True,
-            "options": {"temperature": 0.2, "num_predict": 100},
+            "options": {
+                "temperature": temperature,
+                "num_predict": max_tokens,
+            },
         }
 
-        try:
-            with requests.post(
-                url, json=payload, stream=True, timeout=timeout
-            ) as response:
+        with requests.post(url, json=payload, stream=True, timeout=timeout) as response:
 
-                if response.status_code != 200:
-                    raise Exception(f"Ollama error: {response.text}")
+            if response.status_code != 200:
+                raise Exception(f"Ollama error: {response.text}")
 
-                for line in response.iter_lines():
-                    if not line:
-                        continue
+            for line in response.iter_lines():
+                if not line:
+                    continue
 
-                    try:
-                        data = json.loads(line.decode("utf-8"))
-                    except json.JSONDecodeError:
-                        continue
+                try:
+                    data = json.loads(line.decode("utf-8"))
+                except:
+                    continue
 
-                    # Extract only the token text
-                    token = data.get("response", "")
-                    if token:
-                        yield token
+                token = data.get("response", "")
+                if token:
+                    yield token
 
-                    # Stop when done
-                    if data.get("done"):
-                        break
-
-        except requests.exceptions.Timeout:
-            raise Exception("LLM stream timed out")
-
-        except requests.exceptions.RequestException as e:
-            raise Exception(f"LLM stream failed: {str(e)}")
+                if data.get("done"):
+                    break

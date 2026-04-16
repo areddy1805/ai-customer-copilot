@@ -7,9 +7,9 @@ from app.llm.models import TaskType
 
 
 class RAGService:
-    def __init__(self):
+    def __init__(self, llm: LLMService):
         self.retriever = Retriever()
-        self.llm = LLMService()
+        self.llm = llm
 
     # ================= NON-STREAM =================
     async def generate(self, query: str) -> str:
@@ -20,9 +20,25 @@ class RAGService:
 
         context = "\n".join(chunks)
 
-        response = await self.llm.generate(TaskType.RAG, query, context=context)
+        # -------- BUILD PROMPT (CRITICAL) --------
+        prompt = f"""
+You must answer ONLY using the provided context.
 
-        return self._best_match(response, chunks)
+Context:
+{context}
+
+Query:
+{query}
+"""
+
+        # -------- CORRECT LLM CALL --------
+        response = await self.llm.generate(
+            prompt=prompt,
+            temperature=0,
+            task=TaskType.RAG,
+        )
+
+        return response.strip()
 
     # ================= STREAM =================
     async def generate_stream(self, query: str):
@@ -34,28 +50,20 @@ class RAGService:
 
         context = "\n".join(chunks)
 
+        prompt = f"""
+You must answer ONLY using the provided context.
+
+Context:
+{context}
+
+Query:
+{query}
+"""
+
         async for token in self.llm.generate_stream(
-            TaskType.RAG, query, context=context
+            prompt=prompt,
+            temperature=0,
+            task=TaskType.RAG,
         ):
             yield token
-            await asyncio.sleep(0.03)
-
-    # ================= ENFORCEMENT =================
-    def _best_match(self, response: str, chunks: List[str]) -> str:
-        if not response:
-            return chunks[0]
-
-        response_tokens = set(response.lower().split())
-
-        best_chunk = chunks[0]
-        best_score = -1
-
-        for chunk in chunks:
-            chunk_tokens = set(chunk.lower().split())
-            score = len(response_tokens & chunk_tokens)
-
-            if score > best_score:
-                best_score = score
-                best_chunk = chunk
-
-        return best_chunk
+            await asyncio.sleep(0.01)

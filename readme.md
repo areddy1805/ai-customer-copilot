@@ -9,7 +9,7 @@
 ![Status](https://img.shields.io/badge/Status-Production--Ready-brightgreen)
 ![License](https://img.shields.io/badge/License-MIT-lightgrey)
 
-Production-grade AI system with **deterministic orchestration, tool-first execution, hybrid LLM (Local ↔ Azure), RAG (Azure AI Search / local), memory, and extensible planning layer (agentic WIP)**.
+Production-grade **deterministic AI execution system** with hybrid cloud integration (Local ↔ Azure), strict orchestration control, tool-first execution, and enterprise-ready reliability.
 
 ---
 
@@ -39,29 +39,41 @@ Production-grade AI system with **deterministic orchestration, tool-first execut
 
 This is not a chatbot.
 
-This is a **controlled AI execution system** where:
+This is a **deterministic AI system** designed to execute real-world operations with full control over LLM behavior.
 
-- Executes real actions (order tracking, refunds, tickets)
-- Uses structured planning instead of raw LLM replies
-- Maintains conversation memory
-- Grounds responses using knowledge base (RAG)
-- Supports structured multi-step execution (rule-based, agentic layer in progress)
+System guarantees:
+
+- Structured execution (planner → executor)
+- Real tool invocation (orders, refunds, tickets)
+- Grounded responses via controlled RAG
+- Explicit execution paths (traceable + debuggable)
+- Memory-aware interactions (session scoped)
+- Multi-step and multi-intent handling
+
+LLMs are used as **assistive components**, not decision-makers.
+
+---
 
 ## Architecture Principles
 
-- LLM is stateless and does not control execution
-- Orchestrator owns all decision-making and tool invocation
-- RAG is assistive, not authoritative
-- Azure services are pluggable, not required
-- System supports hybrid execution (local ↔ cloud)
+- LLM is stateless and **cannot control execution**
+- Orchestrator is the **single source of truth**
+- Tools are **pure, deterministic functions**
+- RAG is **strictly bounded and enforceable**
+- Azure services are **plug-in layers, not dependencies**
+- System remains **fully operational without cloud**
+
+---
 
 ## Azure Integration
 
+Azure is integrated as a **replaceable execution layer**, not a requirement.
+
 - Azure OpenAI (Responses API)
 - Azure AI Search (vector + hybrid retrieval)
-- Azure Embeddings
-- Azure Key Vault (planned)
-- Azure Blob Storage (planned)
+- Azure Embeddings (semantic search improvement)
+- Azure Key Vault (secure runtime secrets)
+- Azure Blob Storage (planned for documents + transcripts)
 
 ---
 
@@ -69,11 +81,11 @@ This is a **controlled AI execution system** where:
 
 | Branch | Description |
 |--------|------------|
-| main | Production-ready system (Hybrid Azure + Resilience + Adapter-ready, agentic in progress) |
-| release/v1-local | Deterministic local-only baseline (stable snapshot) |
-| feature/azure-migration | Introduces Azure OpenAI, embeddings, AI Search |
-| feature/agentic-framework | Adds deterministic agent planner + structured execution |
-| feature/framework-adapters | LangChain + AutoGen compatibility layer (non-core) |
+| main | Hybrid production system (Azure + Local + Resilience + Agentic-ready) |
+| release/v1-local | Stable deterministic local baseline |
+| feature/azure-migration | Introduces Azure providers (LLM, embeddings, search) |
+| feature/agentic-framework | Deterministic planner → agent evolution |
+| feature/framework-adapters | LangChain / AutoGen adapters (non-core layer) |
 
 ---
 
@@ -81,57 +93,49 @@ This is a **controlled AI execution system** where:
 
 | Mode | Description |
 |------|------------|
-| Core Agent (Custom) | Deterministic, production-grade planner-executor |
-| LangChain Adapter | Framework-based agent (demo only) |
-| AutoGen Adapter | Multi-agent simulation (experimental) |
+| Core Agent (Custom) | Deterministic planner with structured execution |
+| LangChain Adapter | Framework integration (non-authoritative) |
+| AutoGen Adapter | Multi-agent experimentation |
 
 ---
 
 ## Security & Secrets
 
-Secrets are not stored in code or config.
+Secrets are never stored in code.
 
 ### Secret Management
 
 - Azure Key Vault (primary)
-- Env-based fallback (local development only)
-
-- Rule-based query decomposition (`AND`, `THEN`)
-- Sequential execution pipeline
-- Agentic planning layer will replace this with dynamic plan generation
-
-SECRET_PROVIDER=env | keyvault
+- Environment fallback (development only)
 
 Architecture:
 
-Providers → SecretProvider → (Env OR Key Vault)
+Providers → SecretProvider → (Env | Key Vault)
 
 ### Key Vault Integration
 
-- Secrets fetched at runtime
-- In-memory caching (no repeated network calls)
-- No secrets in `.env` (production mode)
+- Runtime retrieval (no static storage)
+- In-memory caching (latency optimized)
+- Naming normalization layer for Azure constraints
 
-### Naming Constraint Handling
-
-Azure Key Vault does not support underscores.
-
-Internal mapping layer converts:
-
-AZURE_OPENAI_API_KEY → azure-openai-api-key
+---
 
 ## SYSTEM EVOLUTION
 
-### BEFORE
-- Local LLM (Ollama)
+### BEFORE (LOCAL SYSTEM)
+- Ollama (LLM)
 - Local embeddings
 - Chroma vector DB
 
-### NOW (HYBRID)
-- Secrets → Azure Key Vault (secure, runtime retrieval)
-- LLM → Azure (primary) + Local (automatic fallback)
-- Resilience → Retry + Timeout + Circuit Breaker enforced
-- Response Cache → request-level caching (Redis/in-memory)
+### NOW (HYBRID SYSTEM)
+- LLM → Azure (primary) + Local fallback
+- Embeddings → Azure or Local (config-driven)
+- Search → Azure AI Search (hybrid) or Local
+- Secrets → Key Vault (secure runtime)
+- Resilience → retry, timeout, circuit breaker
+- Cache → request-level + semantic caching
+
+System transitioned from **prototype → production-grade architecture**.
 
 ---
 
@@ -139,98 +143,131 @@ AZURE_OPENAI_API_KEY → azure-openai-api-key
 
 ### Deterministic Orchestration
 - Planner → Executor pipeline
-- No direct LLM tool execution
-- Guaranteed execution correctness
+- No LLM-driven execution
+- Fully predictable behavior
+
+---
 
 ### Hybrid LLM Layer
-- Azure OpenAI (primary)
-- Ollama (automatic fallback)
-- Retry + timeout enforced on Azure calls
-- Circuit breaker prevents cascading failures
+- Azure OpenAI (primary execution)
+- Ollama (fallback)
+- Circuit breaker + retry + timeout enforced
 
-Behavior:
+Execution behavior:
 
-Azure success → used
-Azure failure → automatic fallback to local
+- Azure success → used
+- Azure failure → automatic local fallback
+
+---
 
 ### Hybrid Embeddings
-- Local: SentenceTransformers
-- Azure: text-embedding-3-small
-- Config-driven switching
+- Local → SentenceTransformers
+- Azure → text-embedding-3-small
+- Switchable without code changes
 
-### RAG (Controlled + Hybrid Retrieval)
-- Retriever + strict grounding
+---
+
+### RAG (Controlled Retrieval System)
+- Strict grounding enforcement
 - LLM cannot override retrieved facts
-- Post-response enforcement
-- Backend: Chroma OR Azure AI Search
-- Azure enables hybrid retrieval (vector + keyword)
+- Backend:
+  - Local → Chroma (vector)
+  - Azure → AI Search (hybrid: vector + keyword)
+
+---
 
 ### Async + Streaming
-- Fully async pipeline
-- SSE streaming for responses
-- Parallel execution for multi-intent
+- Fully async architecture
+- SSE streaming responses
+- Non-blocking execution
+
+---
 
 ### Multi-Intent Execution
 - Query decomposition
-- Parallel tool execution
+- Parallel execution
 - Deterministic aggregation
 
-### Tool Layer (Pure Functions)
+---
+
+### Tool Layer (Execution Core)
 - Order tracking
 - Refund processing
 - Ticket creation
 
+Tools remain:
+- Stateless
+- Deterministic
+- Fully testable
+
+---
+
 ### Memory Layer
-- Session-scoped context
-- Extendable to Redis
+- Session-based memory
+- Extendable to Redis / persistent storage
+
+---
 
 ### Guardrails
 - Input validation
 - Prompt injection protection
-- Execution safety
+- Execution safety enforcement
+
+---
 
 ### Resilience Layer
 
-- Retry with exponential backoff (Azure calls)
-- Timeout enforcement (prevents hanging requests)
+- Retry (exponential backoff)
+- Timeout enforcement
 - Circuit breaker (failure isolation)
 - Automatic fallback (Azure → Local)
 
-Ensures system never fails due to external dependency.
+System guarantees **no external dependency failure propagates to user experience**.
+
+---
 
 ## Hybrid Execution Control
 
-System supports runtime switching:
+All providers are runtime switchable:
 
-- LLM Provider → Local | Azure
-- Embeddings → Local | Azure
-- RAG Backend → Local | Azure AI Search
+- LLM_PROVIDER = local | azure
+- EMBEDDING_PROVIDER = local | azure
+- SEARCH_PROVIDER = local | azure
 
-All switches are configuration-driven. No code changes required.
+No code changes required.
+
+---
 
 ## System Positioning
 
-This system is designed as:
+This system is:
 
-- A deterministic alternative to LLM-first agents
-- A hybrid AI architecture (local + cloud)
-- A production-ready foundation for enterprise copilots
+- A **deterministic AI execution engine**
+- A **hybrid cloud AI architecture**
+- A **production-ready copilot foundation**
 
-Not:
-- a prompt-based chatbot
-- a framework-dependent agent
+This system is not:
+
+- a prompt-driven chatbot
+- an LLM-controlled agent
+- a framework-dependent implementation
+
+---
 
 ## Execution Transparency
 
-- Every request produces an explicit execution path
-- Plans can be logged, inspected, and replayed
-- System behavior is debuggable at step level
+- Every request produces a **visible execution plan**
+- Plans are **loggable, inspectable, reproducible**
+- Debugging occurs at **step-level granularity**
+
+---
 
 ## Resilience & Failure Handling
 
-- Retry logic for tool execution
-- Fallback between Azure and local providers
-- Timeout and circuit breaker controls
+- Provider-level fallback (Azure → Local)
+- Tool-level retry logic
+- Timeout + circuit breaker isolation
+- System degrades gracefully, never collapses
 
 ---
 
@@ -239,159 +276,171 @@ Not:
 ```mermaid
 flowchart TD
 
-A[User] --> B[FastAPI]
+A[User] --> B[FastAPI API Layer]
 B --> C[Orchestrator]
 
-C --> D[Policy Guard]
-C --> E[Intent Parser - Rule Based]
+%% -------- CONTROL LAYER --------
+C --> D[Guardrails + Rate Limit]
+C --> E[Intent Classifier]
 C --> F[Memory Context]
+
+%% -------- PLANNING --------
 C --> G[Task Decomposer]
-G --> H[Planner / Agent Planner]
+G --> H[Planner]
 
-C --> I[RAG Service]
-I --> I4[Search Provider]
-I4 --> I5[Chroma Local]
-I4 --> I6[Azure AI Search Hybrid]
+%% -------- AGENT LOOP --------
+H --> L[Agent Loop - bounded iterations]
 
-I --> R1[Retry and Timeout]
-R1 --> R2[Circuit Breaker]
+%% -------- EXECUTION UNIT --------
+L --> X[Execution Unit]
 
-C --> J[LLM Service]
-I --> J
+X --> C1[Semantic Cache]
+X --> C2[Response Cache]
+X --> C3[Inflight Deduplication]
 
-J --> J1[Retry and Timeout]
-J1 --> J2[Azure OpenAI Primary]
-J2 -->|failure| J3[Local LLM Fallback]
+C3 -->|miss| E1[Executor]
 
-J --> S[Secret Provider]
-S --> S1[Env Local]
-S --> S2[Azure Key Vault]
-I --> S
+%% -------- TOOL-FIRST EXECUTION --------
+E1 --> T1[Order Tool]
+E1 --> T2[Refund Tool]
+E1 --> T3[Ticket Tool]
 
-C --> N[Memory]
+%% -------- RAG --------
+E1 --> RAG[RAG Service]
+RAG --> R1[Retriever]
+R1 --> R2[Search Provider]
 
-C --> O[Streaming Layer]
+R2 --> R3[Chroma Local]
+R2 --> R4[Azure AI Search Hybrid]
+
+%% -------- LLM --------
+C --> LLM[LLM Service]
+RAG --> LLM
+
+LLM --> L1[Azure OpenAI Primary]
+L1 -->|failure| L2[Local LLM Fallback]
+
+%% -------- RESILIENCE --------
+LLM --> CB1[Circuit Breaker LLM]
+RAG --> CB2[Circuit Breaker RAG]
+
+%% -------- RESPONSE --------
+E1 --> RC[Response Composer]
+RC --> TRACE[Execution Trace + Metrics]
+
+TRACE --> O[Streaming Layer]
 O --> P[Client]
 
-J --> Z[Response]
-R2 --> J
+%% -------- SECRETS --------
+LLM --> S[Secret Provider]
+RAG --> S
+
+S --> S1[Env]
+S --> S2[Azure Key Vault]
 ```
 
 ---
 
-Provider Abstraction (Core Design)
+## Provider Abstraction (Core Design)
 
-LLM
+### LLM
 
 LLM_PROVIDER=local | azure
 
-	•	Local → Ollama
-	•	Azure → Responses API
+- Local → Ollama
+- Azure → Responses API
 
 ---
 
-Embeddings
+### Embeddings
 
 EMBEDDING_PROVIDER=local | azure
 
-	•	Local → SentenceTransformers
-	•	Azure → text-embedding-3-small
+- Local → SentenceTransformers
+- Azure → text-embedding-3-small
 
 ---
 
-Search Provider (RAG Backend)
+### Search Provider (RAG Backend)
 
 SEARCH_PROVIDER=local | azure
 
-• Local → Chroma (vector-only retrieval)
-• Azure → Azure AI Search (hybrid: vector + keyword)
+- Local → Chroma (vector-only retrieval)
+- Azure → Azure AI Search (hybrid: vector + keyword)
 
-Key Behavior:
-• Each provider maintains its own index
-• Switching provider requires reindex
-• No shared storage between providers
+**Key Behavior:**
+
+- Each provider maintains its own index
+- Switching provider requires reindex
+- No shared storage between providers
 
 ---
 
-Key Insight (From Evaluation)
+## Key Insight (From Evaluation)
 
 System behavior:
 
-~90% → Tool execution
-~10% → RAG usage
+- ~90% → Tool execution
+- ~10% → RAG usage
 
-Implication:
-	•	Orchestrator dominates correctness
-	•	RAG quality matters only when invoked
+**Implication:**
+
+- Orchestrator dominates correctness
+- RAG is selectively impactful
 
 ---
 
-Embedding Evaluation Result
+## Embedding Evaluation Result
 
-Query	Local	Azure
-didnt receive package	PASS	PASS+
-item came broken	PASS	PASS+
-shipping time	FAIL	PASS
-cancel after ordering	PASS	PASS+
+| Query                    | Local| Azure|
+|--------------------------|------|-------|
+| didnt receive package    | PASS | PASS+ |
+| item came broken         | PASS | PASS+ |
+| shipping time            | FAIL | PASS  |
+| cancel after ordering    | PASS | PASS+ |
 
-Conclusion
-	•	Azure embeddings improve semantic retrieval
-	•	Local embeddings rely on keyword overlap
-	•	System now exposes real retrieval differences
+**Conclusion**
+
+- Azure embeddings improve semantic retrieval
+- Local embeddings rely on keyword overlap
+- Hybrid setup exposes measurable retrieval differences
 
 ---
 
 ## Project Structure
 
 ```
-
 .
 ├── app/
-│ ├── api/ # FastAPI endpoints (chat, health)
-│ ├── orchestrator/ # Core brain (planning, execution, routing)
-│ │ ├── orchestrator.py
-│ │ ├── planner.py
-│ │ ├── executor.py
-│ │ ├── decomposer.py
-│ │ ├── classifier.py
-│ │ └── ...
-│ ├── tools/ # Business logic (order, refund, ticket)
-│ ├── rag/ # Retrieval system (embeddings, vector store)
-│ ├── memory/ # Session memory (Redis/local)
-│ ├── guard/ # Validation + safety layer
-│ ├── cache/ # Response + semantic caching
-│ ├── security/ # Rate limiting, circuit breaker, concurrency
-│ ├── observability/ # Metrics + logging
-│ ├── llm/ # provider abstraction (Azure / Ollama) /LLM client + prompt layer
-│ ├── eval/ # Evaluation framework
-│ ├── core/ # Config + logging setup
-│ └── main.py # Entry point
+│   ├── api/                  # FastAPI endpoints (chat, streaming, metrics)
+│   ├── orchestrator/         # Core engine (decompose → plan → execute → agent loop)
+│   ├── tools/                # Business logic (order, refund, ticket, rag)
+│   ├── llm/                  # LLM abstraction (Azure + Local providers)
+│   ├── rag/                  # Retrieval pipeline (chunking, indexing, retrieval)
+│   ├── embeddings/           # Embedding providers (local + Azure)
+│   ├── memory/               # Session memory (in-memory / Redis)
+│   ├── cache/                # Response + semantic cache + inflight dedup
+│   ├── security/             # Rate limit, circuit breaker, guardrails
+│   ├── observability/        # Metrics, logging, execution trace
+│   ├── eval/                 # Evaluation framework (accuracy + routing)
+│   ├── core/                 # Config, DI container, secrets (Key Vault / env)
+│   └── main.py               # Application entrypoint
 │
-├── client/ # UI (HTML/CSS/JS)
-│ ├── index.html
-│ └── app.js
-|
+├── services/                 # External search providers (Azure AI Search / FAISS)
+│
 ├── data/
-│ ├── mock_db/ # Mock business data (orders, refunds, tickets)
-│ ├── knowledge_base/ # Policy documents for RAG
-│ └── chroma/ # Vector store (auto-generated)
+│   ├── mock_db/              # Orders, payments, refunds, tickets
+│   ├── knowledge_base/       # RAG documents (policies, edge cases)
+│   └── chroma/               # Local vector store
 │
-├── infra/
-│ ├── Dockerfile
-│ └── docker-compose.yml
-|
-├── assets/ # screenshots + demo video
-│ ├── ui.png
-│ ├── stream.png
-│ ├── slot.png
-│ ├── multi.png
-│ ├── rag_tool.png
-│ └── demo.mp4
+├── client/                   # Minimal UI (SSE streaming)
+├── infra/                    # Docker + compose
+├── scripts/                  # Reindexing + evaluation utilities
+├── assets/                   # Demo + screenshots
 │
-├── scripts/ # Utility scripts
-├── tests/ # Test cases
 ├── requirements.txt
-└── README.md
+├── README.md
+└── LICENSE
 
 ```
 
@@ -413,8 +462,8 @@ All decisions are orchestrator-controlled.
 
 ### 2. Planner-Centric Execution
 
-Planner defines execution path.
-Router only assists.
+- Planner defines execution path
+- Executor enforces deterministic behavior
 
 ---
 
@@ -439,7 +488,9 @@ Every query is treated as:
 
 Query → Tasks → Plans → Execution
 
-### 5. Execution Guarantees
+---
+
+### 6. Execution Guarantees
 
 - Every tool call is explicitly planned and validated
 - No implicit LLM-triggered actions
@@ -451,19 +502,24 @@ Query → Tasks → Plans → Execution
 
 ### Single Intent
 
-Where is my order ORD1?
+Where is my order ORD1
+
 → Plan: [order]
 → Response: Order status + ETA
+
+---
 
 ### Multi Intent
 
 Track ORD1 and refund ORD2
+
 → Plans:
 [order ORD1]
 [order ORD2 → refund ORD2]
 
-→ Response:
-Order + Refund combined (deterministic order)
+→ Response: Combined deterministic output
+
+---
 
 ### RAG + Streaming
 
@@ -471,16 +527,13 @@ What is refund policy
 
 → Routed to RAG
 → LLM streams tokens
-→ Grounded response enforced
+→ Grounding enforced
 
-→ Response:
-Grounded response
-
----
+→ Response: Verified grounded output
 
 ---
 
-Configuration
+## Configuration
 
 .env (control only — no secrets)
 
@@ -691,27 +744,29 @@ curl "http://localhost:8000/api/chat?query=Track%20ORD1%20and%20refund%20ORD2"
 ### Infrastructure
 - Docker
 - Redis
-- Azure (OpenAI, AI Search, Key Vault, Blob - planned)
+- Azure (OpenAI, AI Search, Key Vault, Blob)
 
 ---
 
 ## What Makes This Different
 
-| Feature                | Chatbot | This System |
-|------------------------|---------|-------------|
-| Tool execution         | ❌      | ✅           |
-| Deterministic flow     | ❌      | ✅           |
-| Multi-intent support   | ❌      | ✅           |
-| Async execution        | ❌      | ✅           |
-| Streaming 		     | ❌      | ✅           |
-| Memory                 | Limited | Structured  |
-| RAG grounding          | Partial | Integrated  |
-| Production readiness   | Low     | High        |
-| Pluggable LLMs 	     | ❌      | ✅           |
-| Observability          | Minimal | Integrated  |
-| Safety / Guardrails    | Weak    | Enforced    |
-| Production readiness   | Low	   | High        |
-
+| Capability            | Typical Chatbot        | This System                          |
+|----------------------|------------------------|--------------------------------------|
+| Execution Model      | LLM-driven replies     | Deterministic orchestrator           |
+| Tool Execution       | ❌ None                | ✅ Structured + validated            |
+| Multi-Intent         | ❌ Single intent       | ✅ Parallel + planned execution      |
+| Control Layer        | ❌ Implicit            | ✅ Planner → Executor                |
+| LLM Role             | Primary decision maker | Assistive (no execution control)     |
+| RAG Grounding        | Loose                  | Strict + enforced                    |
+| Memory               | Basic chat history     | Structured session context           |
+| Streaming            | ❌ Rare                | ✅ SSE streaming                     |
+| Async Execution      | ❌ Blocking            | ✅ Fully async + parallel            |
+| Observability        | Minimal                | Full trace + metrics                 |
+| Caching              | ❌ None                | Semantic + response cache            |
+| Resilience           | ❌ None                | Retry + timeout + circuit breaker    |
+| LLM Flexibility      | Fixed provider         | Hybrid (Local ↔ Azure)               |
+| Architecture         | Prompt-based           | System-driven                        |
+| Production Readiness | Low                    | High                                 |
 
 ## Framework Independence
 
@@ -723,20 +778,43 @@ This system does not depend on agent frameworks (LangChain, AutoGen) for executi
 
 ---
 
-### Future Improvements
+## Future Improvements
 
-- Agentic planner (LLM-driven structured plan generation)
-- DAG-based execution engine (dependency-aware execution)
-- Tool-level caching and step reuse
-- Persistent memory (Redis / DB-backed sessions)
-- Distributed execution (queue-based workers)
-- Advanced observability (tracing, dashboards)
-- WebSocket streaming (replace SSE)
-- Authentication + multi-tenant isolation
+- LLM-assisted planner (replace rule-based decomposition with structured planning)
+- LangChain adapter (framework interoperability for comparison/demo)
+- AutoGen multi-agent layer (experimental, non-core)
+- Persistent memory (Redis-backed sessions)
+- Basic cost + latency tracking (per-provider visibility)
+
+### Scope:
+
+1. LangChain / LangGraph
+	•	Wrap existing orchestrator as a tool
+	•	Show graph-based execution vs your planner
+	•	No replacement of core system
+
+2. AutoGen
+	•	Simulate multi-agent interaction
+	•	Keep it isolated (demo layer only)
+	•	No production coupling
 
 ---
 
 ## Tradeoffs
+
+- Deterministic orchestration vs agent autonomy
+  → Reliable execution, limited flexibility
+
+- Custom system vs frameworks
+  → Full control and transparency, higher implementation effort
+
+- Hybrid (Local + Azure)
+  → Resilience + flexibility, added operational complexity
+
+- Bounded agent loop
+  → Prevents runaway execution, limited self-recovery
+
+---
 
 MIT License
 

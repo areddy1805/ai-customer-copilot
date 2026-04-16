@@ -12,20 +12,41 @@ class OrderTool:
             return json.load(f)
 
     def get_order_status(self, input_data: Dict[str, Any]) -> ToolResponse:
-        """
-        Fetch order status from mock DB
-        """
-
         try:
             validated = OrderStatusInput(**input_data)
 
             orders = self._load_orders()
 
-            for order in orders:
-                if order["order_id"] == validated.order_id:
-                    return ToolResponse(success=True, data=order)
+            order = next(
+                (o for o in orders if o["order_id"] == validated.order_id), None
+            )
 
-            return ToolResponse(success=False, error="Order not found")
+            # -------- NOT FOUND → BUSINESS FAILURE (NOT SYSTEM FAILURE) --------
+            if not order:
+                return ToolResponse(
+                    success=True,
+                    data={
+                        "order_id": validated.order_id,
+                        "status": "failed",
+                        "reason": "Order not found",
+                    },
+                )
+
+            # -------- SUCCESS (NORMALIZED SHAPE) --------
+            return ToolResponse(
+                success=True,
+                data={
+                    "order_id": order.get("order_id"),
+                    "status": order.get("status"),
+                },
+            )
 
         except Exception as e:
-            return ToolResponse(success=False, error=str(e))
+            return ToolResponse(
+                success=True,
+                data={
+                    "order_id": input_data.get("order_id"),
+                    "status": "failed",
+                    "reason": str(e),
+                },
+            )

@@ -3,7 +3,7 @@ import numpy as np
 
 class SemanticCache:
 
-    def __init__(self, embedder, threshold=0.80, max_size=1000):
+    def __init__(self, embedder, threshold=0.70, max_size=1000):
         self.embedder = embedder
         self.threshold = threshold
         self.max_size = max_size
