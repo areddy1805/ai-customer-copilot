@@ -37,6 +37,12 @@ class RequestMetrics:
     success: bool = True
     error: str = ""
 
+    # -------- FAILURE / RESILIENCE --------
+    llm_cb_triggered: bool = False
+    rag_cb_triggered: bool = False
+    fallback_triggered: bool = False
+    retry_count: int = 0
+
     # -------- TRACE --------
     tools_used: List[str] = field(default_factory=list)
 
@@ -64,4 +70,8 @@ class RequestMetrics:
             "success": self.success,
             "error": self.error,
             "tools_used": self.tools_used,
+            "llm_cb_triggered": self.llm_cb_triggered,
+            "rag_cb_triggered": self.rag_cb_triggered,
+            "fallback_triggered": self.fallback_triggered,
+            "retry_count": self.retry_count,
         }
