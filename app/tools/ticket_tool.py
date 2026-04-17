@@ -22,12 +22,17 @@ class TicketTool:
 
             tickets = self._load_tickets()
 
+            order_id = input_data.get("order_id")
+
+            if order_id:
+                order_id = order_id.strip().upper()
+
             # Check for existing active ticket
             existing_ticket = next(
                 (
                     t
                     for t in tickets
-                    if t["order_id"] == input_data.get("order_id")
+                    if t["order_id"] == order_id
                     and t["status"] in ["open", "in_progress"]
                 ),
                 None,
@@ -48,7 +53,7 @@ class TicketTool:
 
             ticket_data = {
                 "ticket_id": new_ticket_id,
-                "order_id": input_data.get("order_id"),
+                "order_id": order_id,
                 "issue_type": validated.issue,
                 "status": "open",
                 "created_at": datetime.now().strftime("%Y-%m-%d"),

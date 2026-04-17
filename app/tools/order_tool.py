@@ -15,24 +15,44 @@ class OrderTool:
         try:
             validated = OrderStatusInput(**input_data)
 
+            # -------- NORMALIZATION --------
+            raw_id = validated.order_id.strip().upper()
+
+            import re
+
+            match = re.search(r"ORD0*(\d+)", raw_id)
+
+            if not match:
+                return ToolResponse(
+                    success=True,
+                    data={
+                        "order_id": raw_id,
+                        "status": "failed",
+                        "reason": "Invalid order_id format",
+                    },
+                )
+
+            order_id = f"ORD{int(match.group(1))}"
+
             orders = self._load_orders()
 
             order = next(
-                (o for o in orders if o["order_id"] == validated.order_id), None
+                (o for o in orders if o["order_id"] == order_id),
+                None,
             )
 
-            # -------- NOT FOUND → BUSINESS FAILURE (NOT SYSTEM FAILURE) --------
+            # -------- NOT FOUND --------
             if not order:
                 return ToolResponse(
                     success=True,
                     data={
-                        "order_id": validated.order_id,
+                        "order_id": order_id,
                         "status": "failed",
                         "reason": "Order not found",
                     },
                 )
 
-            # -------- SUCCESS (NORMALIZED SHAPE) --------
+            # -------- SUCCESS --------
             return ToolResponse(
                 success=True,
                 data={

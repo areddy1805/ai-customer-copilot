@@ -373,6 +373,18 @@ class Orchestrator:
 
                 for t, plan in validated:
                     state.metadata["plans"].append([str(step) for step in plan.steps])
+
+                    # -------- NORMALIZE PLAN FOR TRACE --------
+                    for step in plan.steps:
+                        if "order_id" in step.params and step.params["order_id"]:
+                            raw = step.params["order_id"].strip().upper()
+
+                            import re
+
+                            match = re.search(r"ORD0*(\d+)", raw)
+                            if match:
+                                step.params["order_id"] = f"ORD{int(match.group(1))}"
+
                     iteration_trace["plans"].append([str(step) for step in plan.steps])
 
                     action = plan.steps[0].action if plan.steps else "unknown"
