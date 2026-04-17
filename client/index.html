@@ -1,5 +1,6 @@
 <!doctype html>
 <html>
+
   <head>
     <link rel="icon" href="favicon.ico" />
     <title>AI Customer Copilot</title>
@@ -8,8 +9,8 @@
       body {
         margin: 0;
         font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto;
-        background: #020617;
-        color: white;
+        background: #0b0f14;
+        color: #e6edf3;
         display: flex;
         justify-content: center;
         align-items: center;
@@ -22,120 +23,164 @@
         height: 92vh;
         display: flex;
         flex-direction: column;
-        background: #020617;
-        border: 1px solid #1e293b;
-        border-radius: 14px;
+        background: #0f141a;
+        border: 1px solid #1f2a37;
+        border-radius: 12px;
         overflow: hidden;
-        box-shadow: 0 10px 40px rgba(0, 0, 0, 0.6);
       }
 
       .header {
-        padding: 16px 20px;
-        font-weight: 600;
-        font-size: 16px;
-        border-bottom: 1px solid #1e293b;
+        padding: 14px 18px;
+        border-bottom: 1px solid #1f2a37;
         display: flex;
-        align-items: center;
         justify-content: space-between;
+        align-items: center;
+        font-size: 14px;
       }
 
-      .header span {
-        color: #94a3b8;
-        font-size: 13px;
+      .controls {
+        display: flex;
+        align-items: center;
+        gap: 14px;
+      }
+
+      .debug-toggle {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        font-size: 12px;
+        color: #8b949e;
+        cursor: pointer;
+      }
+
+      .status {
+        font-size: 12px;
+        color: #6e7681;
+      }
+
+      .main {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
       }
 
       .chat {
         flex: 1;
         overflow-y: auto;
-        padding: 24px;
-        display: flex;
-        flex-direction: column;
+        padding: 20px;
       }
 
       .msg {
         max-width: 70%;
-        padding: 12px 14px;
-        margin-bottom: 14px;
-        border-radius: 12px;
+        padding: 10px 12px;
+        margin-bottom: 12px;
+        border-radius: 10px;
+        font-size: 13px;
         line-height: 1.5;
-        font-size: 14px;
-        white-space: pre-wrap;
       }
 
       .user {
-        background: #2563eb;
+        background: #1f6feb;
+        color: white;
         margin-left: auto;
-        box-shadow: 0 4px 12px rgba(37, 99, 235, 0.3);
       }
 
       .bot {
-        background: #1e293b;
+        background: #161b22;
+        border: 1px solid #1f2a37;
+      }
+
+      /* -------- DEBUG PANEL -------- */
+      .debug {
+        border-top: 1px solid #1f2a37;
+        height: 140px;
+        min-height: 100px;
+        max-height: 60vh;
+        overflow-y: auto;
+        display: none;
+        background: #0d1117;
+        flex: none;
+      }
+
+      /* DRAG HANDLE */
+      .debug-handle {
+        height: 6px;
+        cursor: ns-resize;
+        background: #1f2a37;
+      }
+
+      .debug-section {
+        padding: 8px 12px;
+        font-size: 11px;
+        color: #8b949e;
+        border-top: 1px solid #1f2a37;
+        cursor: pointer;
+      }
+
+      .debug-box {
+        display: none;
+        padding: 10px;
+        font-size: 11px;
+        color: #6e7681;
+        background: #0d1117;
+        line-height: 1.4;
       }
 
       .input-area {
         display: flex;
-        padding: 14px;
-        border-top: 1px solid #1e293b;
-        background: #020617;
+        padding: 12px;
+        border-top: 1px solid #1f2a37;
+        background: #0f141a;
       }
 
       input {
         flex: 1;
-        padding: 12px;
-        border-radius: 8px;
-        border: 1px solid #1e293b;
-        background: #020617;
-        color: white;
-        font-size: 14px;
+        padding: 10px;
+        border-radius: 6px;
+        border: 1px solid #1f2a37;
+        background: #0b0f14;
+        color: #e6edf3;
+        font-size: 13px;
       }
 
       input::placeholder {
-        color: #64748b;
+        color: #6e7681;
       }
 
       input:focus {
-        border-color: #2563eb;
         outline: none;
+        border-color: #30363d;
       }
 
       button {
-        margin-left: 10px;
-        padding: 12px 18px;
-        background: #2563eb;
-        color: white;
+        margin-left: 8px;
+        padding: 10px 14px;
+        background: #238636;
         border: none;
-        border-radius: 8px;
+        border-radius: 6px;
+        color: white;
+        font-size: 13px;
         cursor: pointer;
-        font-weight: 500;
       }
 
       button:hover {
-        background: #1d4ed8;
-      }
-
-      button:disabled {
-        background: #334155;
-        cursor: not-allowed;
-      }
-
-      .empty {
-        text-align: center;
-        color: #64748b;
-        margin-top: 60px;
-        font-size: 14px;
-      }
-
-      .typing {
-        font-style: italic;
-        color: #94a3b8;
+        background: #2ea043;
       }
 
       .footer {
         text-align: center;
-        font-size: 11px;
-        color: #475569;
+        font-size: 10px;
+        color: #6e7681;
         padding: 6px;
-        border-top: 1px solid #1e293b;
+        border-top: 1px solid #1f2a37;
+      }
+
+      .empty {
+        text-align: center;
+        color: #6e7681;
+        margin-top: 60px;
+        font-size: 13px;
       }
     </style>
   </head>
@@ -144,11 +189,35 @@
     <div class="container">
       <div class="header">
         <div>AI Customer Copilot</div>
-        <span>LLM Orchestrator Demo</span>
+
+        <div class="controls">
+          <label class="debug-toggle">
+            <input type="checkbox" id="debugToggle" />
+            <span>Debug</span>
+          </label>
+
+          <span id="statusText" class="status">Idle</span>
+        </div>
       </div>
 
-      <div id="chat" class="chat">
-        <div class="empty">Ask about orders, refunds, or delivery issues</div>
+      <div class="main">
+        <div id="chat" class="chat">
+          <div class="empty">Ask about orders, refunds, or delivery issues</div>
+        </div>
+
+        <div id="debugPanel" class="debug">
+          <div id="debugHandle" class="debug-handle"></div>
+
+          <div class="debug-section" onclick="togglePanel('traceBox')">
+            ▶ Execution Trace
+          </div>
+          <pre id="traceBox" class="debug-box"></pre>
+
+          <div class="debug-section" onclick="togglePanel('metricsBox')">
+            ▶ Metrics
+          </div>
+          <pre id="metricsBox" class="debug-box"></pre>
+        </div>
       </div>
 
       <div class="input-area">
@@ -161,4 +230,5 @@
 
     <script src="app.js"></script>
   </body>
+
 </html>

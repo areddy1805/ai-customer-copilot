@@ -22,20 +22,37 @@ class RefundTool:
         try:
             validated = RefundRequestInput(**input_data)
 
+            # -------- NORMALIZATION --------
+            raw_id = order_id.strip().upper()
+
+            import re
+
+            match = re.search(r"ORD0*(\d+)", raw_id)
+
+            if not match:
+                return ToolResponse(
+                    success=True,
+                    data={
+                        "order_id": raw_id,
+                        "status": "failed",
+                        "reason": "Invalid order_id format",
+                    },
+                )
+
+            order_id = f"ORD{int(match.group(1))}"
+
             orders = self._load_json(self.orders_path)
             payments = self._load_json(self.payments_path)
             refunds = self._load_json(self.refunds_path)
 
             # -------- ORDER CHECK (AUTHORITATIVE) --------
-            order = next(
-                (o for o in orders if o["order_id"] == validated.order_id), None
-            )
+            order = next((o for o in orders if o["order_id"] == order_id), None)
 
             if not order:
                 return ToolResponse(
                     success=True,
                     data={
-                        "order_id": validated.order_id,
+                        "order_id": order_id,
                         "status": "failed",
                         "reason": "Order not found",
                     },
@@ -46,7 +63,7 @@ class RefundTool:
                 return ToolResponse(
                     success=True,
                     data={
-                        "order_id": validated.order_id,
+                        "order_id": order_id,
                         "status": "failed",
                         "reason": "Order not delivered",
                     },
@@ -54,14 +71,14 @@ class RefundTool:
 
             # -------- EXISTING REFUND (ONLY AFTER VALIDATION) --------
             existing_refund = next(
-                (r for r in refunds if r["order_id"] == validated.order_id), None
+                (r for r in refunds if r["order_id"] == order_id), None
             )
 
             if existing_refund:
                 return ToolResponse(
                     success=True,
                     data={
-                        "order_id": validated.order_id,
+                        "order_id": order_id,
                         "status": existing_refund.get("status"),
                         "amount": existing_refund.get("amount"),
                         "mode": existing_refund.get("mode"),
@@ -69,15 +86,13 @@ class RefundTool:
                 )
 
             # -------- PAYMENT CHECK --------
-            payment = next(
-                (p for p in payments if p["order_id"] == validated.order_id), None
-            )
+            payment = next((p for p in payments if p["order_id"] == order_id), None)
 
             if not payment:
                 return ToolResponse(
                     success=True,
                     data={
-                        "order_id": validated.order_id,
+                        "order_id": order_id,
                         "status": "failed",
                         "reason": "Payment record not found",
                     },
@@ -92,7 +107,7 @@ class RefundTool:
             return ToolResponse(
                 success=True,
                 data={
-                    "order_id": validated.order_id,
+                    "order_id": order_id,
                     "status": "initiated",
                     "amount": order.get("amount"),
                     "mode": refund_mode,
