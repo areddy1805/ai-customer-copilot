@@ -45,6 +45,7 @@ async def chat(payload: dict):
         "plans": state.metadata.get("plans"),
         "trace_id": state.metadata.get("trace_id"),
         "trace": state.metadata.get("trace", {}),
+        "metrics": state.metadata.get("metrics", {}),
     }
 
 

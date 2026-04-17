@@ -20,6 +20,7 @@ from app.security.concurrency_limiter import ConcurrencyLimiter
 from app.security.circuit_breaker import CircuitBreaker
 from app.utils.retry import retry
 from app.observability.metrics import Metrics
+from app.observability.request_metrics import RequestMetrics
 from app.guard.response_validator import ResponseValidator
 from app.cache.semantic_cache import SemanticCache
 from app.rag.embedder import Embedder
@@ -98,6 +99,11 @@ class Orchestrator:
         state = ConversationState(user_query=user_query)
         trace_id = str(uuid.uuid4())
         state.metadata["trace_id"] = trace_id
+        req_metrics = RequestMetrics(request_id=trace_id, query=user_query)
+
+        req_metrics.llm_provider = type(self.llm).__name__
+        req_metrics.embedding_provider = "local"
+        req_metrics.search_provider = "local"
 
         def _to_str(resp):
             if isinstance(resp, str):
@@ -142,7 +148,14 @@ class Orchestrator:
             if clear_session:
                 self.session_state.pop(session_id, None)
 
+            req_metrics.success = status == "success"
+            req_metrics.error = error or ""
+            req_metrics.llm_ms = req_metrics.decomposer_ms + sum(req_metrics.planner_ms)
+            req_metrics.finalize()
+
             state.metadata["trace"] = state.trace
+            state.metadata["metrics"] = req_metrics.to_dict()
+
             return state
 
         try:
@@ -170,6 +183,25 @@ class Orchestrator:
                 )
                 return _exit("Connecting to agent.", "failure", "user_requested_human")
 
+            # -------- RESPONSE CACHE (PRE-LLM) --------
+            cache_key = user_query.strip().lower()
+            cached_response = self.cache.get(cache_key)
+
+            if cached_response:
+                req_metrics.response_cache_hit = True
+                req_metrics.llm_calls = 0
+                req_metrics.llm_ms = 0
+
+                state.intent = self.classifier.classify(user_query)
+                state.metadata["route"] = "cache"
+                state.metadata["plans"] = []
+
+                state.metadata["details"] = cached_response.get("details", [])
+
+                state.trace["cache"]["cache_hit"] = True
+
+                return _exit(cached_response["response"])
+
             # -------- INTENT --------
             intent = self.classifier.classify(user_query)
             state.intent = intent
@@ -180,19 +212,28 @@ class Orchestrator:
             if not self.llm_cb.allow():
                 self.metrics.inc("llm_cb_block")
                 tasks = [{"query": user_query, "type": "tool"}]
+                req_metrics.llm_cb_triggered = True
+                req_metrics.fallback_triggered = True
             else:
                 start = time.time()
                 try:
                     tasks = await self.decomposer.decompose(user_query)
                     latency = int((time.time() - start) * 1000)
+                    req_metrics.llm_ms += latency
                     self.metrics.observe("latency_decomposer", latency)
                     state.trace["decomposer_ms"] = latency
                     self.llm_cb.record_success()
+                    req_metrics.decomposer_ms = latency
+                    req_metrics.llm_calls += 1
                 except Exception:
                     latency = int((time.time() - start) * 1000)
+                    req_metrics.llm_ms += latency
                     self.metrics.observe("latency_decomposer", latency)
                     state.trace["decomposer_ms"] = latency
                     self.llm_cb.record_failure()
+                    req_metrics.decomposer_ms = latency
+                    req_metrics.llm_calls += 1
+                    req_metrics.fallback_triggered = True
                     tasks = [{"query": user_query, "type": "tool"}]
 
             memory_context = self._get_memory_context(session_id)
@@ -201,6 +242,7 @@ class Orchestrator:
             for t in tasks:
                 if not self.llm_cb.allow():
                     self.metrics.inc("llm_cb_block")
+                    req_metrics.llm_cb_triggered = True
                     continue
 
                 start = time.time()
@@ -211,14 +253,21 @@ class Orchestrator:
                         memory_context,
                     )
                     latency = int((time.time() - start) * 1000)
+                    req_metrics.llm_ms += latency
                     self.metrics.observe("latency_planner", latency)
                     state.trace["planner_ms"].append(latency)
                     self.llm_cb.record_success()
+                    req_metrics.planner_ms.append(latency)
+                    req_metrics.llm_calls += 1
                 except Exception:
                     latency = int((time.time() - start) * 1000)
+                    req_metrics.llm_ms += latency
                     self.metrics.observe("latency_planner", latency)
                     state.trace["planner_ms"].append(latency)
                     self.llm_cb.record_failure()
+                    req_metrics.planner_ms.append(latency)
+                    req_metrics.llm_calls += 1
+                    req_metrics.fallback_triggered = True
                     continue
 
                 plan, _ = self.plan_validator.validate(plan)
@@ -236,6 +285,9 @@ class Orchestrator:
                 cache_key = self._plan_cache_key(plan)
                 owner = self.inflight.set_if_absent(cache_key)
 
+                if is_rag:
+                    req_metrics.rag_calls += 1
+
                 if not owner:
                     for _ in range(20):
                         cached = self.inflight.get(cache_key)
@@ -249,6 +301,7 @@ class Orchestrator:
                     cached = self.cache.get(cache_key)
                     if cached:
                         state.trace["cache"]["cache_hit"] = True
+                        req_metrics.response_cache_hit = True
                         state.trace["executor_ms"].append(0)
                         state.trace["tools"].append(tool_name)
                         return cached
@@ -263,10 +316,14 @@ class Orchestrator:
                     state.trace["executor_ms"].append(latency)
                     state.trace["tools"].append(tool_name)
                     state.trace["cache"]["executed"] = True
+                    req_metrics.executor_ms.append(latency)
+                    req_metrics.tool_calls += 1
+                    req_metrics.tools_used.append(tool_name)
 
                     # -------- FAILURE --------
                     if not result or not result.success:
                         err = getattr(result, "error", "unknown")
+                        req_metrics.fallback_triggered = True
 
                         return {
                             "_tool": tool_name,
@@ -382,6 +439,17 @@ class Orchestrator:
 
             self.memory.add_message(session_id, "user", user_query)
             self.memory.add_message(session_id, "assistant", structured["summary"])
+
+            # -------- STORE IN CACHE --------
+            cache_key = user_query.strip().lower()
+
+            self.cache.set(
+                cache_key,
+                {
+                    "response": structured["summary"],
+                    "details": structured.get("details", []),
+                },
+            )
 
             return _exit(structured["summary"], clear_session=True)
 
