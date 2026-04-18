@@ -52,6 +52,22 @@ Execution guarantees:
 
 ---
 
+## Evolution Journey
+
+v1 — Deterministic Local System
+→ Tool-first execution, no cloud
+
+v2 — Hybrid Azure System
+→ Pluggable LLM, embeddings, retrieval
+
+v3 — Agentic Evaluation Layer
+→ Framework comparison (LangChain, LangGraph)
+
+v4 — Production Hardening
+→ caching, retries, circuit breakers, observability
+
+---
+
 ## Request Lifecycle
 
 User → Orchestrator → Decompose → Plan → Execute → Compose → Response
@@ -71,6 +87,24 @@ User → Orchestrator → Decompose → Plan → Execute → Compose → Respons
 - RAG is bounded and cannot override system truth
 - Azure services are pluggable, never authoritative
 - System remains fully functional without cloud
+
+---
+
+## Why Not Pure Agentic Systems?
+
+- Agent frameworks allow LLMs to control execution
+- This introduces:
+  - hallucinated tool calls
+  - unpredictable flows
+  - debugging difficulty
+
+This system enforces:
+- deterministic planning
+- bounded execution
+- strict tool validation
+
+Result:
+- production reliability > agent flexibility
 
 ---
 
@@ -224,6 +258,28 @@ RAG --> S
 S --> S1[Env]
 S --> S2[Azure Key Vault]
 ```
+
+---
+
+## System Design Considerations
+
+### Latency
+- Parallel execution for multi-intent
+- Streaming to reduce perceived latency
+
+### Cost
+- Azure vs Local switching
+- Embedding reuse + caching
+
+### Scalability
+- Stateless API layer
+- Redis for distributed memory
+- Search index scaling via Azure AI Search
+
+### Failure Handling
+- circuit breakers per provider
+- fallback to local LLM
+- retry with backoff
 
 ---
 
@@ -407,6 +463,14 @@ python -m app.eval.eval_runner
 python -m scripts.test_retriever
 ```
 
+---
+
+## Real-World Use Cases
+
+- E-commerce customer support automation
+- Enterprise internal helpdesk systems
+- Policy-compliant AI assistants
+- Regulated environments requiring deterministic execution
 
 ---
 
