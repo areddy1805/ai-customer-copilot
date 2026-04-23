@@ -11,27 +11,55 @@
 
 Production-grade **deterministic AI execution system** with hybrid cloud integration (Local ↔ Azure), strict orchestration control, tool-first execution, and enterprise-ready reliability.
 ---
-## 🎥 Demo
 
-[![Watch Demo](assets/ui.png)](https://files.catbox.moe/y608uh.mp4)
+## Demo & Screens
 
-## ⬇️ Download: https://github.com/areddy1805/ai-customer-copilot/releases/download/v1.0/demo.mp4
+<details open>
+<summary><b>Full System Demo</b></summary>
 
-## Screenshots
+<br>
 
-<table>
-<tr>
-<td><img src="assets/ui.png"></td>
-<td><img src="assets/stream.png"></td>
-</tr>
-<tr>
-<td><img src="assets/slot.png"></td>
-<td><img src="assets/multi.png"></td>
-</tr>
-<tr>
-<td colspan="2"><img src="assets/rag_tool.png"></td>
-</tr>
-</table>
+<p align="center">
+  <a href="https://github.com/areddy1805/ai-customer-copilot/releases/download/v1.0/demo.mp4">
+    <img src="assets/demo.gif" width="700"/>
+  </a>
+</p>
+
+</details>
+
+---
+
+<details open>
+<summary><b>Multi-Intent Orchestration</b></summary>
+
+<br>
+
+<img src="assets/multi_intent_execution.png"/>
+
+</details>
+
+<details>
+<summary><b>RAG Retrieval</b></summary>
+
+<br>
+
+<img src="assets/rag_response_trace.png"/>
+
+</details>
+
+<details>
+<summary><b>Cache Layer</b></summary>
+
+<br>
+
+<p align="center">
+  <img src="assets/cache_hit_trace.png" width="48%"/>
+  <img src="assets/cache_response_ui.png" width="48%"/>
+</p>
+
+</details>
+
+---
 
 ## Overview
 

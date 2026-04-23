@@ -22,6 +22,9 @@ class RefundTool:
         try:
             validated = RefundRequestInput(**input_data)
 
+            # -------- EXTRACT INPUT --------
+            order_id = validated.order_id
+
             # -------- NORMALIZATION --------
             raw_id = order_id.strip().upper()
 
@@ -118,7 +121,7 @@ class RefundTool:
             return ToolResponse(
                 success=True,
                 data={
-                    "order_id": input_data.get("order_id"),
+                    "order_id": input_data.get("order_id", "unknown"),
                     "status": "failed",
                     "reason": str(e),
                 },
