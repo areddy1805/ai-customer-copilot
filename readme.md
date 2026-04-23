@@ -10,7 +10,10 @@
 ![License](https://img.shields.io/badge/License-MIT-lightgrey)
 
 Production-grade **deterministic AI execution system** with hybrid cloud integration (Local ↔ Azure), strict orchestration control, tool-first execution, and enterprise-ready reliability.
+
 ---
+
+
 
 ## Demo & Screens
 
@@ -20,14 +23,17 @@ Production-grade **deterministic AI execution system** with hybrid cloud integra
 <br>
 
 <p align="center">
-  <a href="https://github.com/areddy1805/ai-customer-copilot/releases/download/v1.0/demo.mp4">
+  <a href="https://github.com/areddy1805/ai-customer-copilot/releases/download/v2.0.0/demo.mp4">
     <img src="assets/demo.gif" width="700"/>
   </a>
 </p>
 
 </details>
 
+
 ---
+
+
 
 <details open>
 <summary><b>Multi-Intent Orchestration</b></summary>
@@ -59,7 +65,10 @@ Production-grade **deterministic AI execution system** with hybrid cloud integra
 
 </details>
 
+
 ---
+
+
 
 ## Overview
 
@@ -75,21 +84,34 @@ Execution guarantees:
 - Explicit execution paths (traceable + debuggable)
 - Memory-aware interactions (session scoped)
 - Multi-step and multi-intent handling
+
 ---
+
 ## Evolution Journey
 
-v1 — Deterministic Local System
-→ Tool-first execution, no cloud
+Phase 1 — Deterministic Local System
+→ Tool-first execution, local LLM, basic RAG
 
-v2 — Hybrid Azure System
-→ Pluggable LLM, embeddings, retrieval
+Phase 2 — Hybrid Architecture
+→ Pluggable LLM, embeddings, retrieval abstraction
 
-v3 — Agentic Evaluation Layer
-→ Framework comparison (LangChain, LangGraph)
+Phase 3 — Agentic Layer
+→ Multi-intent planning, structured execution, framework evaluation
 
-v4 — Production Hardening
-→ caching, retries, circuit breakers, observability
+Phase 4 — Production Hardening
+→ Caching, retries, circuit breakers, observability
+
+
 ---
+
+
+
+Current Release: **v2.0 — Agentic Hybrid AI Copilot**
+
+
+---
+
+
 ## Request Lifecycle
 
 User → Orchestrator → Decompose → Plan → Execute → Compose → Response
@@ -97,7 +119,9 @@ User → Orchestrator → Decompose → Plan → Execute → Compose → Respons
 - LLM is used only for decomposition and planning
 - Execution is strictly tool-driven
 - Every step is validated and traceable
+
 ---
+
 ## Architecture Principles
 
 - LLM is stateless and cannot control execution
@@ -107,7 +131,9 @@ User → Orchestrator → Decompose → Plan → Execute → Compose → Respons
 - RAG is bounded and cannot override system truth
 - Azure services are pluggable, never authoritative
 - System remains fully functional without cloud
+
 ---
+
 ## Why Not Pure Agentic Systems?
 
 - Agent frameworks allow LLMs to control execution
@@ -123,7 +149,9 @@ This system enforces:
 
 Result:
 - production reliability > agent flexibility
+
 ---
+
 ## Azure Integration
 
 Optional cloud layer:
@@ -136,7 +164,10 @@ Optional cloud layer:
 All components are replaceable at runtime.
 
 **No Azure dependency is required for system execution.**
+
 ---
+
+
 ## Development Branches
 
 | Branch | Description |
@@ -146,7 +177,10 @@ All components are replaceable at runtime.
 | feature/azure-migration | Introduces Azure providers (LLM, embeddings, search) |
 | feature/agentic-framework | Deterministic planner → agent evolution |
 | feature/framework-adapters | LangChain / AutoGen adapters (non-core layer) |
+
 ---
+
+
 ## Security & Secrets
 
 Secrets are never stored in code.
@@ -165,7 +199,9 @@ Providers → SecretProvider → (Env | Key Vault)
 - Runtime retrieval (no static storage)
 - In-memory caching (latency optimized)
 - Naming normalization layer for Azure constraints
+
 ---
+
 ## Core Capabilities
 
 - Deterministic orchestration (planner → executor)
@@ -177,7 +213,10 @@ Providers → SecretProvider → (Env | Key Vault)
 - Full observability (trace + metrics)
 - Resilience (retry, timeout, circuit breaker)
 - Streaming responses (SSE)
+
 ---
+
+
 ## Runtime Control
 
 Providers are switchable via config:
@@ -187,14 +226,19 @@ Providers are switchable via config:
 - SEARCH_PROVIDER = local | azure
 
 No code changes required.
+
 ---
+
+
 ## Resilience & Failure Handling
 
 - Provider fallback (Azure → Local)
 - Retry with backoff
 - Timeout enforcement
 - Circuit breaker isolation
+
 ---
+
 ## Architecture
 
 ```mermaid
@@ -262,7 +306,10 @@ RAG --> S
 S --> S1[Env]
 S --> S2[Azure Key Vault]
 ```
+
 ---
+
+
 ## System Design Considerations
 
 ### Latency
@@ -282,7 +329,9 @@ S --> S2[Azure Key Vault]
 - circuit breakers per provider
 - fallback to local LLM
 - retry with backoff
+
 ---
+
 ## Provider Abstraction (Core Design)
 
 ### LLM
@@ -291,14 +340,18 @@ LLM_PROVIDER=local | azure
 
 - Local → Ollama
 - Azure → Responses API
+
 ---
+
 ### Embeddings
 
 EMBEDDING_PROVIDER=local | azure
 
 - Local → SentenceTransformers
 - Azure → text-embedding-3-small
+
 ---
+
 ### Search Provider (RAG Backend)
 
 SEARCH_PROVIDER=local | azure
@@ -311,7 +364,9 @@ SEARCH_PROVIDER=local | azure
 - Each provider maintains its own index
 - Switching provider requires reindex
 - No shared storage between providers
+
 ---
+
 ## Key Insight (From Evaluation)
 
 System behavior:
@@ -323,7 +378,9 @@ System behavior:
 
 - Orchestrator dominates correctness
 - RAG is selectively impactful
+
 ---
+
 ## Embedding Evaluation Result
 
 | Query                    | Local| Azure|
@@ -338,7 +395,9 @@ System behavior:
 - Azure embeddings improve semantic retrieval
 - Local embeddings rely on keyword overlap
 - Hybrid setup exposes measurable retrieval differences
-------
+---
+---
+
 ## Benchmark: Framework vs Deterministic Execution
 
 ### Benchmark Setup
@@ -353,7 +412,9 @@ Execution modes:
 - LangChain
 - LangGraph
 - AutoGen
+
 ---
+
 ### Results Summary
 
 #### Local Models (Ollama)
@@ -364,7 +425,10 @@ Execution modes:
 | LangChain  | 11.2s        | 11.5s        | 12.0s     |
 | LangGraph  | 10.9s        | 12.1s        | 11.5s     |
 | AutoGen    | 10.6s        | 11.6s        | 11.4s     |
+
 ---
+
+
 #### Azure Models (GPT-4.1-mini)
 
 | Mode       | Single Intent | Multi Intent | RAG Query |
@@ -373,7 +437,10 @@ Execution modes:
 | LangChain  | 19.5s        | 19.3s        | 25.0s     |
 | LangGraph  | 18.6s        | 20.0s        | 18.6s     |
 | AutoGen    | 17.4s        | 19.9s        | 17.7s     |
+
 ---
+
+
 ### Key Observations
 
 - Framework overhead is negligible (<10%)
@@ -382,7 +449,9 @@ Execution modes:
   - RAG retrieval
 - Deterministic orchestration performs on par with agent frameworks
 - Output differences are driven by prompting style, not architecture
-------
+---
+---
+
 ## Project Structure
 
 ```
@@ -419,7 +488,10 @@ Execution modes:
 └── LICENSE
 
 ```
+
 ---
+
+
 ## Example Flows
 
 ### Single Intent
@@ -439,7 +511,9 @@ Query: What is refund policy
 Route: RAG
 Behavior: streaming + grounded
 Output: Verified response
+
 ---
+
 ## Configuration
 
 ```env
@@ -453,7 +527,9 @@ AZURE_KEY_VAULT_URL=https://<vault>.vault.azure.net/
 
 - No secrets stored locally
 -	All secrets resolved at runtime
+
 ---
+
 ## Run
 
 ```bash
@@ -478,7 +554,10 @@ python -m http.server 3000
 ```bash
 curl "http://localhost:8000/api/chat?query=Track%20ORD1%20and%20refund%20ORD2"
 ```
+
 ---
+
+
 ## Evaluation
 
 ```bash
@@ -488,14 +567,19 @@ python -m app.eval.eval_runner
 # retriever evaluation
 python -m scripts.test_retriever
 ```
+
 ---
+
+
 ## Real-World Use Cases
 
 - E-commerce customer support automation
 - Enterprise internal helpdesk systems
 - Policy-compliant AI assistants
 - Regulated environments requiring deterministic execution
+
 ---
+
 ## Tech Stack
 
 ### Backend
@@ -525,7 +609,10 @@ python -m scripts.test_retriever
 - Docker
 - Redis
 - Azure (OpenAI, AI Search, Key Vault, Blob)
+
 ---
+
+
 ## What Makes This Different
 
 | Capability            | Typical Chatbot        | This System                          |
@@ -554,7 +641,9 @@ This system does not depend on agent frameworks (LangChain, AutoGen) for executi
 - Core logic is implemented as deterministic system components
 - Frameworks are integrated only as optional adapters
 - Execution control remains fully within the orchestrator
+
 ---
+
 ## Why Not Pure Agentic Systems?
 
 Agent frameworks (LangChain, AutoGen, etc.) delegate execution control to LLMs.
@@ -576,14 +665,19 @@ Result:
 - predictable behavior
 - production-grade reliability
 - full execution traceability
+
 ---
+
 ## Future Improvements
 
 - Persistent memory (Redis-backed sessions)
 - Cost + latency attribution per provider
 - Advanced retrieval tuning (hybrid ranking optimization)
 - Optional multi-agent experimentation (non-core)
+
 ---
+
+
 ## Tradeoffs
 
 - Deterministic orchestration vs agent autonomy
@@ -597,7 +691,9 @@ Result:
 
 - Bounded agent loop
   → Prevents runaway execution, limited self-recovery
+
 ---
+
 ## Engineering Insights
 
 ### 1. Framework Choice ≠ Performance
@@ -612,14 +708,18 @@ Reason:
 - LLM inference dominates execution time
 - retrieval (RAG) is secondary bottleneck
 - orchestration overhead is minimal
+
 ---
+
 ### 2. Deterministic Systems Are Not Slower
 
 Contrary to common assumptions:
 
 - deterministic orchestration matches agent frameworks in performance
 - while providing significantly higher reliability and control
+
 ---
+
 ### 3. Architecture > Framework
 
 System performance and behavior are primarily influenced by:
@@ -631,7 +731,9 @@ System performance and behavior are primarily influenced by:
 Not by:
 
 - agent framework choice
+
 ---
+
 ### 4. Frameworks Are Abstractions, Not Architecture
 
 In this system:
