@@ -1,42 +1,37 @@
 [
   {
     "user_id": "USR1",
-    "name": "Abhilash Reddy",
-    "email": "abhilash@test.com",
-    "phone": "9999999991",
-    "address": "Pune, India",
+    "name": "User 1",
     "wallet_balance": 500
   },
   {
     "user_id": "USR2",
-    "name": "Rahul Sharma",
-    "email": "rahul@test.com",
-    "phone": "9999999992",
-    "address": "Mumbai, India",
-    "wallet_balance": 0
+    "name": "User 2",
+    "wallet_balance": 100
   },
   {
     "user_id": "USR3",
-    "name": "Sneha Iyer",
-    "email": "sneha@test.com",
-    "phone": "9999999993",
-    "address": "Bangalore, India",
-    "wallet_balance": 1200
+    "name": "User 3",
+    "wallet_balance": 100
   },
   {
     "user_id": "USR4",
-    "name": "Karan Mehta",
-    "email": "karan@test.com",
-    "phone": "9999999994",
-    "address": "Delhi, India",
-    "wallet_balance": 200
+    "name": "User 4",
+    "wallet_balance": 100
   },
   {
     "user_id": "USR5",
-    "name": "Priya Nair",
-    "email": "priya@test.com",
-    "phone": "9999999995",
-    "address": "Chennai, India",
-    "wallet_balance": 0
+    "name": "User 5",
+    "wallet_balance": 500
+  },
+  {
+    "user_id": "USR6",
+    "name": "User 6",
+    "wallet_balance": 100
+  },
+  {
+    "user_id": "USR7",
+    "name": "User 7",
+    "wallet_balance": 1000
   }
 ]

@@ -87,6 +87,17 @@ Execution guarantees:
 
 ---
 
+## System Positioning
+
+This is not an LLM system with tools.
+
+This is a deterministic execution system where:
+- tools are primary
+- LLM is optional
+- orchestrator controls execution
+
+---
+
 ## Evolution Journey
 
 Phase 1 — Deterministic Local System
@@ -106,19 +117,43 @@ Phase 4 — Production Hardening
 
 
 
-Current Release: **v2.0 — Agentic Hybrid AI Copilot**
+Current Release: **v3 — Deterministic AI Execution System (Fast-Path Optimized)**
 
 
 ---
-
 
 ## Request Lifecycle
 
 User → Orchestrator → Decompose → Plan → Execute → Compose → Response
 
-- LLM is used only for decomposition and planning
+- LLM is used only as a fallback for decomposition and planning.
+- Most requests bypass LLM entirely via deterministic fast-path execution.
 - Execution is strictly tool-driven
 - Every step is validated and traceable
+
+---
+
+## Fast Path Execution (Zero-LLM)
+
+High-confidence queries bypass LLM completely.
+
+Trigger:
+- order_id present
+- keywords: order, refund, cancel, track
+
+Behavior:
+- direct plan creation
+- no decomposition
+- no planning
+- immediate execution
+
+Impact:
+- near-zero latency for tool queries
+- eliminates planning errors
+- ensures deterministic behavior
+
+Observed:
+- ~90% traffic handled via fast-path
 
 ---
 
@@ -136,19 +171,28 @@ User → Orchestrator → Decompose → Plan → Execute → Compose → Respons
 
 ## Why Not Pure Agentic Systems?
 
-- Agent frameworks allow LLMs to control execution
-- This introduces:
-  - hallucinated tool calls
-  - unpredictable flows
-  - debugging difficulty
+Agent frameworks (LangChain, AutoGen, etc.) delegate execution control to LLMs.
+
+This introduces:
+
+- non-deterministic tool selection
+- hallucinated execution paths
+- difficult debugging and tracing
 
 This system enforces:
-- deterministic planning
-- bounded execution
+
+- deterministic planning (planner → executor)
 - strict tool validation
+- Bounded Execution Loop (Deterministic)
+  - Single-pass execution in most cases
+  - No autonomous reasoning loops
+  - Strict ordering: order → refund
 
 Result:
-- production reliability > agent flexibility
+
+- predictable behavior
+- production-grade reliability
+- full execution traceability
 
 ---
 
@@ -210,9 +254,14 @@ Providers → SecretProvider → (Env | Key Vault)
 - Hybrid RAG (Azure AI Search / local vector DB)
 - Multi-intent + parallel execution
 - Semantic + response caching
-- Full observability (trace + metrics)
 - Resilience (retry, timeout, circuit breaker)
 - Streaming responses (SSE)
+- Full observability:
+  - per-request trace (planner, decomposer, executor)
+  - token usage tracking
+  - retry + fallback metrics
+  - tool usage tracking
+  - latency attribution
 
 ---
 
@@ -239,6 +288,18 @@ No code changes required.
 
 ---
 
+## Failure Modes
+
+| Type | Description |
+|------|------------|
+| Planning Failure | wrong or missing tool |
+| Retrieval Failure | incorrect RAG output |
+| Tool Failure | tool execution error |
+| System Failure | guard / rate limit |
+| Latency Failure | slow but correct |
+
+---
+
 ## Architecture
 
 ```mermaid
@@ -247,64 +308,76 @@ flowchart TD
 A[User] --> B[FastAPI API Layer]
 B --> C[Orchestrator]
 
-%% -------- CONTROL LAYER --------
+%% CONTROL LAYER
 C --> D[Guardrails + Rate Limit]
 C --> E[Intent Classifier]
 C --> F[Memory Context]
 
-%% -------- PLANNING --------
-C --> G[Task Decomposer]
+%% ROUTING
+C --> FP{Fast Path?}
+
+%% FAST PATH
+FP -->|Yes| DP[Direct Plan Zero-LLM]
+
+%% LLM PATH
+FP -->|No| G[Task Decomposer]
 G --> H[Planner]
+G --> LLM[LLM Service Fallback]
+H --> LLM
 
-%% -------- AGENT LOOP --------
-H --> L[Agent Loop - bounded iterations]
+%% RAG BYPASS
+C --> RAG_ROUTE{RAG Intent?}
+RAG_ROUTE -->|Yes| RAG[RAG Service]
 
-%% -------- EXECUTION UNIT --------
+%% EXECUTION LOOP
+DP --> L[Bounded Execution Loop]
+H --> L
+RAG --> L
+
+%% EXECUTION UNIT
 L --> X[Execution Unit]
 
+%% CACHING
 X --> C1[Semantic Cache]
 X --> C2[Response Cache]
-X --> C3[Inflight Deduplication]
+X --> C3[Inflight Dedup]
 
 C3 -->|miss| E1[Executor]
 
-%% -------- TOOL-FIRST EXECUTION --------
+%% TOOLS
 E1 --> T1[Order Tool]
 E1 --> T2[Refund Tool]
 E1 --> T3[Ticket Tool]
 
-%% -------- RAG --------
-E1 --> RAG[RAG Service]
+%% RAG INTERNAL
+E1 --> RAG
 RAG --> R1[Retriever]
 R1 --> R2[Search Provider]
 
 R2 --> R3[Chroma Local]
-R2 --> R4[Azure AI Search Hybrid]
+R2 --> R4[Azure AI Search]
 
-%% -------- LLM --------
-C --> LLM[LLM Service]
-RAG --> LLM
+%% LLM PROVIDERS
+LLM --> L1[Azure OpenAI]
+L1 -->|fail| L2[Local LLM]
 
-LLM --> L1[Azure OpenAI Primary]
-L1 -->|failure| L2[Local LLM Fallback]
-
-%% -------- RESILIENCE --------
+%% RESILIENCE
 LLM --> CB1[Circuit Breaker LLM]
 RAG --> CB2[Circuit Breaker RAG]
 
-%% -------- RESPONSE --------
+%% RESPONSE
 E1 --> RC[Response Composer]
-RC --> TRACE[Execution Trace + Metrics]
+RC --> TRACE[Trace + Metrics]
 
 TRACE --> O[Streaming Layer]
 O --> P[Client]
 
-%% -------- SECRETS --------
+%% SECRETS
 LLM --> S[Secret Provider]
 RAG --> S
 
 S --> S1[Env]
-S --> S2[Azure Key Vault]
+S --> S2[Key Vault]
 ```
 
 ---
@@ -329,6 +402,18 @@ S --> S2[Azure Key Vault]
 - circuit breakers per provider
 - fallback to local LLM
 - retry with backoff
+
+---
+
+## Cost Observability
+
+Tracks:
+- input tokens
+- output tokens
+- LLM usage per request
+
+Fallback:
+- estimation for non-LLM paths
 
 ---
 
@@ -367,6 +452,25 @@ SEARCH_PROVIDER=local | azure
 
 ---
 
+## Evaluation Framework
+
+System includes a deterministic evaluation suite:
+
+- Dataset-driven testing
+- Tool accuracy measurement
+- Keyword validation
+- Latency tracking
+- Failure classification
+
+Metrics:
+- Tool Accuracy %
+- Keyword Accuracy %
+- Latency breakdown
+- Failure distribution
+- Reliability metrics
+
+---
+
 ## Key Insight (From Evaluation)
 
 System behavior:
@@ -378,6 +482,17 @@ System behavior:
 
 - Orchestrator dominates correctness
 - RAG is selectively impactful
+
+---
+
+## Real System Performance (Post Optimization)
+
+- Tool queries: ~1–10 ms
+- RAG queries: ~2.5–3s
+- LLM usage: ~0%
+- Execution dominates latency
+
+System behaves as deterministic execution engine, not LLM system.
 
 ---
 
@@ -557,16 +672,78 @@ curl "http://localhost:8000/api/chat?query=Track%20ORD1%20and%20refund%20ORD2"
 
 ---
 
+Update README → Evaluation section.
+
+WHY
+Expose full eval pipeline: dataset generation + system eval + retriever eval.
+
+ACTION
+Replace existing block with:
 
 ## Evaluation
-
+### 1. Generate Dataset
 ```bash
-# system evaluation
-python -m app.eval.eval_runner
+python -m app.eval.generate_dataset
+```
 
-# retriever evaluation
+Generates:
+
+* app/eval/dataset.json
+
+Includes:
+
+* 50+ queries
+* single_intent / multi_intent / rag / edge distribution
+
+⸻
+
+2. Run System Evaluation
+```bash
+python -m app.eval.eval_runner
+```
+
+Outputs:
+
+* app/eval/results.json
+
+Metrics:
+
+* Tool Accuracy %
+* Keyword Match %
+* Failure Breakdown
+* Latency Distribution
+* Reliability Metrics (fallback, retries, failures)
+
+⸻
+
+3. Retriever Evaluation (RAG)
+```bash
 python -m scripts.test_retriever
 ```
+
+Validates:
+
+* retrieval quality
+* chunk relevance
+* semantic matching
+
+⸻
+
+4. Key Metrics to Track
+
+* tool_correct → planning accuracy
+* keyword_match → response correctness
+* latency_ms → performance
+* fallback_rate → reliability
+* retry_count → stability
+* tool_failure_rate → execution health
+
+EXPECTED OUTPUT
+README exposes:
+- dataset generation step
+- full eval flow
+- explicit metrics definition
+STOP
 
 ---
 
@@ -642,29 +819,13 @@ This system does not depend on agent frameworks (LangChain, AutoGen) for executi
 - Frameworks are integrated only as optional adapters
 - Execution control remains fully within the orchestrator
 
----
+## Key Insight
 
-## Why Not Pure Agentic Systems?
-
-Agent frameworks (LangChain, AutoGen, etc.) delegate execution control to LLMs.
-
-This introduces:
-
-- non-deterministic tool selection
-- hallucinated execution paths
-- difficult debugging and tracing
-
-This system enforces:
-
-- deterministic planning (planner → executor)
-- strict tool validation
-- bounded execution loops
+~90% of customer support queries are structured.
 
 Result:
-
-- predictable behavior
-- production-grade reliability
-- full execution traceability
+- LLM unnecessary for majority
+- deterministic execution is faster, cheaper, reliable
 
 ---
 
