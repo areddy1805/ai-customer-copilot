@@ -121,18 +121,22 @@ class Orchestrator:
 
             latency = int((time.time() - start_time) * 1000)
 
+            # -------- REQUEST STATUS --------
             if status == "success":
                 self.metrics.inc("requests_success")
             else:
                 self.metrics.inc("requests_failure")
 
+            # -------- ERROR TRACKING --------
             if error:
                 mapped = ErrorMapper.map(error)
                 self.metrics.inc(f"error_type_{mapped['error_type']}")
                 self.metrics.inc(f"error_code_{mapped['error_code']}")
 
+            # -------- LATENCY --------
             self.metrics.observe("total_latency", latency)
 
+            # -------- LOGGING --------
             self.logger.log_request(
                 session_id=session_id,
                 user_query=user_query,
@@ -145,27 +149,51 @@ class Orchestrator:
                 error=error,
             )
 
+            # -------- SESSION CLEANUP --------
             if clear_session:
                 self.session_state.pop(session_id, None)
 
+            # -------- METRICS FINALIZATION --------
             req_metrics.success = status == "success"
             req_metrics.error = error or ""
             req_metrics.llm_ms = req_metrics.decomposer_ms + sum(req_metrics.planner_ms)
+
+            # track retry count
+            self.metrics.observe("retry_count", req_metrics.retry_count)
+
             req_metrics.finalize()
 
+            # -------- TRACE --------
             state.metadata["trace"] = state.trace
 
-            # LATENCY BREAKDOWN
+            # -------- LATENCY BREAKDOWN --------
+            total_time = int((time.time() - start_time) * 1000)
+
             state.metadata["latency_breakdown"] = {
                 "planner_ms": state.trace.get("planner_ms", []),
                 "decomposer_ms": state.trace.get("decomposer_ms", 0),
                 "executor_ms": state.trace.get("executor_ms", []),
+                "total_time_ms": total_time,
             }
 
+            # -------- TOKEN TRACKING --------
             req_metrics.input_tokens = getattr(self.llm, "last_input_tokens", 0)
             req_metrics.output_tokens = getattr(self.llm, "last_output_tokens", 0)
 
             state.metadata["metrics"] = req_metrics.to_dict()
+
+            # -------- RELIABILITY COUNTERS --------
+            if req_metrics.fallback_triggered:
+                self.metrics.inc("fallback_total")
+
+            if req_metrics.tool_calls > 0:
+                self.metrics.inc("tool_calls_total", req_metrics.tool_calls)
+
+            if req_metrics.rag_calls > 0:
+                self.metrics.inc("rag_calls_total", req_metrics.rag_calls)
+
+            if error:
+                self.metrics.inc("tool_failure_total")
 
             return state
 
