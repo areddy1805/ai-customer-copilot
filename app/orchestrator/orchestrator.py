@@ -157,11 +157,13 @@ class Orchestrator:
 
             # LATENCY BREAKDOWN
             state.metadata["latency_breakdown"] = {
-                "planner_time": sum(state.trace.get("planner_ms", [])),
-                "decomposer_time": state.trace.get("decomposer_ms", 0),
-                "executor_time": sum(state.trace.get("executor_ms", [])),
-                "total_time": latency,
+                "planner_ms": state.trace.get("planner_ms", []),
+                "decomposer_ms": state.trace.get("decomposer_ms", 0),
+                "executor_ms": state.trace.get("executor_ms", []),
             }
+
+            req_metrics.input_tokens = getattr(self.llm, "last_input_tokens", 0)
+            req_metrics.output_tokens = getattr(self.llm, "last_output_tokens", 0)
 
             state.metadata["metrics"] = req_metrics.to_dict()
 

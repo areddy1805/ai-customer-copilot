@@ -149,7 +149,7 @@ def run_eval():
             "keyword_match": keyword_score,
             "latency": latency,
             "response": response_json,
-            "latency_breakdown": response_json.get("trace", {}),
+            "latency_breakdown": response_json.get("latency_breakdown", {}),
         }
 
         failure = classify_failure(result, expected_tool)
@@ -207,7 +207,7 @@ def run_eval():
         pct = (v / total) * 100
         print(f"{k}: {v} ({pct:.2f}%)")
 
-    # -------- LATENCY DISTRIBUTION --------
+    # -------- LATENCY DISTRIBUTION (FIXED) --------
     planner_total = 0
     decomposer_total = 0
     executor_total = 0
@@ -219,9 +219,16 @@ def run_eval():
         if not trace:
             continue
 
-        planner_total += sum(trace.get("planner_ms", []))
-        decomposer_total += trace.get("decomposer_ms", 0)
-        executor_total += sum(trace.get("executor_ms", []))
+        planner = trace.get("planner_ms", [])
+        decomposer = trace.get("decomposer_ms", 0)
+        executor = trace.get("executor_ms", [])
+
+        if not planner and not decomposer and not executor:
+            continue
+
+        planner_total += sum(planner)
+        decomposer_total += decomposer
+        executor_total += sum(executor)
 
         count_with_latency += 1
 
@@ -232,21 +239,45 @@ def run_eval():
 
         total_avg = planner_avg + decomposer_avg + executor_avg
 
-        print("\n=== LATENCY DISTRIBUTION ===")
-        print(f"Planner: {(planner_avg/total_avg)*100:.2f}%")
-        print(f"Decomposer: {(decomposer_avg/total_avg)*100:.2f}%")
-        print(f"Executor: {(executor_avg/total_avg)*100:.2f}%")
+        if total_avg > 0:
+            print("\n=== LATENCY DISTRIBUTION ===")
+            print(f"Planner: {(planner_avg/total_avg)*100:.2f}%")
+            print(f"Decomposer: {(decomposer_avg/total_avg)*100:.2f}%")
+            print(f"Executor: {(executor_avg/total_avg)*100:.2f}%")
 
-        print("\n=== ABSOLUTE LATENCY (ms) ===")
-        print(f"Planner Avg: {planner_avg:.2f}")
-        print(f"Decomposer Avg: {decomposer_avg:.2f}")
-        print(f"Executor Avg: {executor_avg:.2f}")
+            print("\n=== ABSOLUTE LATENCY (ms) ===")
+            print(f"Planner Avg: {planner_avg:.2f}")
+            print(f"Decomposer Avg: {decomposer_avg:.2f}")
+            print(f"Executor Avg: {executor_avg:.2f}")
 
-        print("\n=== SYSTEM SHARE ===")
-        print(
-            f"LLM (planner+decomposer): {((planner_avg+decomposer_avg)/total_avg)*100:.2f}%"
-        )
-        print(f"Execution (tools+rag): {(executor_avg/total_avg)*100:.2f}%")
+            print("\n=== SYSTEM SHARE ===")
+            print(f"LLM: {((planner_avg+decomposer_avg)/total_avg)*100:.2f}%")
+            print(f"Execution: {(executor_avg/total_avg)*100:.2f}%")
+
+    # -------- SYSTEM AGGREGATION --------
+    total_llm = 0
+    total_exec = 0
+    count = 0
+
+    for r in results:
+        m = r.get("response", {}).get("metrics", {})
+
+        llm_time = m.get("llm_ms", 0)
+        exec_time = sum(m.get("executor_ms", []))
+
+        if llm_time or exec_time:
+            total_llm += llm_time
+            total_exec += exec_time
+            count += 1
+
+    if count > 0:
+        avg_llm = total_llm / count
+        avg_exec = total_exec / count
+        total = avg_llm + avg_exec
+
+        print("\n=== SYSTEM TIME BREAKDOWN ===")
+        print(f"LLM: {(avg_llm/total)*100:.2f}%")
+        print(f"Execution: {(avg_exec/total)*100:.2f}%")
 
     # -------- RELIABILITY METRICS --------
     print("\n=== RELIABILITY METRICS ===")

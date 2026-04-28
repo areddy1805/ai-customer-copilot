@@ -8,6 +8,9 @@ class LLMService:
     def __init__(self):
         secret_provider = get_secret_provider()
 
+        self.last_input_tokens = 0
+        self.last_output_tokens = 0
+
         if settings.LLM_PROVIDER == "azure":
             self.provider = AzureProvider(secret_provider)
         else:
@@ -27,7 +30,13 @@ class LLMService:
             "task": task,
         }
 
-        return await self.provider.generate(prompt, config)
+        result = await self.provider.generate(prompt, config)
+
+        # ---- PROPAGATE TOKENS ----
+        self.last_input_tokens = getattr(self.provider, "last_input_tokens", 0)
+        self.last_output_tokens = getattr(self.provider, "last_output_tokens", 0)
+
+        return result
 
     async def generate_stream(
         self,

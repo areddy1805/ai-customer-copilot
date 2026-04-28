@@ -46,6 +46,10 @@ class RequestMetrics:
     # -------- TRACE --------
     tools_used: List[str] = field(default_factory=list)
 
+    # -------- TOKENS --------
+    input_tokens: int = 0
+    output_tokens: int = 0
+
     def finalize(self):
         self.total_time_ms = (time.time() - self.start_time) * 1000
 
@@ -74,4 +78,6 @@ class RequestMetrics:
             "rag_cb_triggered": self.rag_cb_triggered,
             "fallback_triggered": self.fallback_triggered,
             "retry_count": self.retry_count,
+            "input_tokens": self.input_tokens,
+            "output_tokens": self.output_tokens,
         }
