@@ -358,13 +358,36 @@ class Orchestrator:
 
                 # -------- RAG DIRECT EXECUTION --------
                 if step.action == "rag":
+                    start_exec = time.time()
+
                     try:
                         response = await self.rag.generate(original_query)
+
+                        latency = int((time.time() - start_exec) * 1000)
+
+                        # ---- TRACE ----
+                        state.trace["executor_ms"].append(latency)
+                        state.trace["tools"].append("rag")
+
+                        # ---- METRICS ----
+                        req_metrics.executor_ms.append(latency)
+                        req_metrics.tool_calls += 1
+                        req_metrics.tools_used.append("rag")
+                        req_metrics.rag_calls += 1
 
                         return [
                             {"_tool": "rag", "response": response, "status": "success"}
                         ]
+
                     except Exception as e:
+                        latency = int((time.time() - start_exec) * 1000)
+
+                        state.trace["executor_ms"].append(latency)
+                        state.trace["tools"].append("rag")
+
+                        req_metrics.executor_ms.append(latency)
+                        req_metrics.rag_calls += 1
+
                         return [{"_tool": "rag", "status": "failed", "reason": str(e)}]
 
                 cache_key = self._plan_cache_key(plan)

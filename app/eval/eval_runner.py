@@ -72,20 +72,25 @@ def keyword_match(response_text: str, keywords: list):
     return 0
 
 
-def classify_failure(result, expected_set):
-    metrics = result.get("response", {}).get("metrics", {})
+def classify_failure(r, expected_tool):
+    metrics = r.get("response", {}).get("metrics", {})
+    error = metrics.get("error", "")
 
-    if metrics.get("error") == "rate_limit":
+    actual = r.get("actual_tool", [])
+
+    # --- GUARD / RATE LIMIT ---
+    if error in ["guard_block", "rate_limit"]:
         return "tool_failure"
 
-    actual_set = normalize_tool_set(result.get("actual_tool"))
+    actual_set = normalize_tool_set(actual)
+    expected_set = normalize_tool_set(expected_tool)
 
+    # --- NO TOOL ---
     if not actual_set:
         return "planning_failure"
 
+    # --- MISMATCH ---
     if actual_set != expected_set:
-        if "rag" in actual_set and expected_set != {"rag"}:
-            return "retrieval_failure"
         return "planning_failure"
 
     return "none"
@@ -99,6 +104,10 @@ def run_eval():
 
     tool_correct_total = 0
     keyword_correct_total = 0
+
+    fallback_count = 0
+    retry_total = 0
+    tool_failures = 0
 
     for item in dataset:
         query = item["query"]
@@ -120,6 +129,17 @@ def run_eval():
         keyword_score = keyword_match(response_text, keywords)
         keyword_correct_total += keyword_score
 
+        # -------- RELIABILITY EXTRACTION --------
+        metrics = response_json.get("metrics", {})
+
+        if metrics.get("fallback_triggered"):
+            fallback_count += 1
+
+        retry_total += metrics.get("retry_count", 0)
+
+        if metrics.get("error"):
+            tool_failures += 1
+
         result = {
             "id": item["id"],
             "query": query,
@@ -132,7 +152,7 @@ def run_eval():
             "latency_breakdown": response_json.get("trace", {}),
         }
 
-        failure = classify_failure(result, expected_set)
+        failure = classify_failure(result, expected_tool)
         result["failure_type"] = failure
 
         results.append(result)
@@ -149,7 +169,37 @@ def run_eval():
 
     total = len(results)
 
+    # -------- AGGREGATE SCORING --------
+    tool_acc = (tool_correct_total / total) * 100
+    keyword_acc = (keyword_correct_total / total) * 100
+
+    print("\n=== AGGREGATE SCORES ===")
+    print(f"Tool Accuracy: {tool_acc:.2f}%")
+    print(f"Keyword Match Rate: {keyword_acc:.2f}%")
+
+    # -------- TYPE-WISE BREAKDOWN --------
+    type_stats = {}
+
+    for r, item in zip(results, dataset):
+        t = item["type"]
+
+        if t not in type_stats:
+            type_stats[t] = {"count": 0, "tool_correct": 0, "keyword_correct": 0}
+
+        type_stats[t]["count"] += 1
+        type_stats[t]["tool_correct"] += r["tool_correct"]
+        type_stats[t]["keyword_correct"] += r["keyword_match"]
+
+    print("\n=== TYPE BREAKDOWN ===")
+    for t, stats in type_stats.items():
+        t_tool_acc = (stats["tool_correct"] / stats["count"]) * 100
+        t_kw_acc = (stats["keyword_correct"] / stats["count"]) * 100
+
+        print(f"{t} → Tool: {t_tool_acc:.2f}% | Keyword: {t_kw_acc:.2f}%")
+
     # -------- FAILURE BREAKDOWN --------
+    from collections import Counter
+
     failure_counts = Counter(r["failure_type"] for r in results)
 
     print("\n=== FAILURE BREAKDOWN ===")
@@ -164,13 +214,15 @@ def run_eval():
     count_with_latency = 0
 
     for r in results:
-        lb = r.get("latency_breakdown", {})
-        if not lb:
+        trace = r.get("latency_breakdown", {})
+
+        if not trace:
             continue
 
-        planner_total += sum(lb.get("planner_ms", []))
-        decomposer_total += lb.get("decomposer_ms", 0)
-        executor_total += sum(lb.get("executor_ms", []))
+        planner_total += sum(trace.get("planner_ms", []))
+        decomposer_total += trace.get("decomposer_ms", 0)
+        executor_total += sum(trace.get("executor_ms", []))
+
         count_with_latency += 1
 
     if count_with_latency > 0:
@@ -185,10 +237,24 @@ def run_eval():
         print(f"Decomposer: {(decomposer_avg/total_avg)*100:.2f}%")
         print(f"Executor: {(executor_avg/total_avg)*100:.2f}%")
 
-    # -------- FINAL METRICS --------
-    tool_acc = (tool_correct_total / total) * 100
-    keyword_acc = (keyword_correct_total / total) * 100
+        print("\n=== ABSOLUTE LATENCY (ms) ===")
+        print(f"Planner Avg: {planner_avg:.2f}")
+        print(f"Decomposer Avg: {decomposer_avg:.2f}")
+        print(f"Executor Avg: {executor_avg:.2f}")
 
+        print("\n=== SYSTEM SHARE ===")
+        print(
+            f"LLM (planner+decomposer): {((planner_avg+decomposer_avg)/total_avg)*100:.2f}%"
+        )
+        print(f"Execution (tools+rag): {(executor_avg/total_avg)*100:.2f}%")
+
+    # -------- RELIABILITY METRICS --------
+    print("\n=== RELIABILITY METRICS ===")
+    print(f"Fallback Rate: {(fallback_count/total)*100:.2f}%")
+    print(f"Avg Retry Count: {retry_total/total:.2f}")
+    print(f"Tool Failure Rate: {(tool_failures/total)*100:.2f}%")
+
+    # -------- FINAL METRICS --------
     print("\n=== FINAL METRICS ===")
     print(f"Total: {total}")
     print(f"Tool Accuracy: {tool_acc:.2f}%")
