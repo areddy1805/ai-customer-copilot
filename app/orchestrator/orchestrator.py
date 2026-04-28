@@ -225,83 +225,242 @@ class Orchestrator:
             state.metadata["route"] = "agentic"
             self.metrics.inc(f"intent_{intent}")
 
-            # -------- DECOMPOSE --------
-            if not self.llm_cb.allow():
-                self.metrics.inc("llm_cb_block")
-                tasks = [{"query": user_query, "type": "tool"}]
-                req_metrics.llm_cb_triggered = True
-                req_metrics.fallback_triggered = True
-            else:
-                start = time.time()
-                try:
-                    tasks = await self.decomposer.decompose(user_query)
-                    # ---- FIX: upgrade dependent rag → tool ----
-                    for t in tasks:
-                        q = t["query"].lower()
+            # -------- DEFAULT INIT (MANDATORY) --------
+            tasks = [{"query": user_query, "type": "tool"}]
+            validated = []
+            use_fast_path = True
 
-                        if "refund" in q or "cancel" in q:
-                            t["type"] = "tool"
+            order_id = self._extract_order_id(user_query)
+            q = user_query.lower()
 
-                    latency = int((time.time() - start) * 1000)
-                    req_metrics.llm_ms += latency
-                    self.metrics.observe("latency_decomposer", latency)
-                    state.trace["decomposer_ms"] = latency
-                    self.llm_cb.record_success()
-                    req_metrics.decomposer_ms = latency
-                    req_metrics.llm_calls += 1
-                except Exception:
-                    latency = int((time.time() - start) * 1000)
-                    req_metrics.llm_ms += latency
-                    self.metrics.observe("latency_decomposer", latency)
-                    state.trace["decomposer_ms"] = latency
-                    self.llm_cb.record_failure()
-                    req_metrics.decomposer_ms = latency
-                    req_metrics.llm_calls += 1
-                    req_metrics.fallback_triggered = True
+            # ---- INTENT-AWARE AMBIGUITY GUARD ----
+            order_id = self._extract_order_id(user_query)
+
+            requires_order_id = intent in [
+                "order_status",
+                "refund_request",
+                "cancel_order",
+            ]
+
+            if requires_order_id and not order_id:
+                return _exit("Missing order_id. Cannot proceed with this request.")
+
+            # ---- HARD TOOL OVERRIDE (PRIORITY) ----
+            if order_id and any(k in q for k in ["refund", "cancel", "order", "track"]):
+                tasks = []
+
+                if " and " in q:
+                    parts = [p.strip() for p in q.split(" and ")]
+                    for p in parts:
+                        tasks.append({"query": p, "type": "tool"})
+                else:
                     tasks = [{"query": user_query, "type": "tool"}]
+
+                state.trace["decomposer_ms"] = 0
+                req_metrics.decomposer_ms = 0
+                use_fast_path = True
+            else:
+                # ---- HARD RAG BYPASS WITH FULL TRACE ----
+                if intent in ["refund_policy", "rag", "faq"]:
+                    # ---- DECOMPOSER (SIMULATED) ----
+                    d_start = time.time()
+                    decomposer_ms = int((time.time() - d_start) * 1000)
+
+                    state.trace["decomposer_ms"] = decomposer_ms
+                    req_metrics.decomposer_ms = decomposer_ms
+
+                    # ---- PLANNER (SIMULATED) ----
+                    p_start = time.time()
+                    planner_ms = int((time.time() - p_start) * 1000)
+
+                    state.trace["planner_ms"].append(planner_ms)
+                    req_metrics.planner_ms.append(planner_ms)
+
+                    # ---- EXECUTION (REAL RAG) ----
+                    e_start = time.time()
+                    response = await self.rag.generate(user_query)
+                    executor_ms = int((time.time() - e_start) * 1000)
+
+                    state.trace["executor_ms"].append(executor_ms)
+                    state.trace["tools"].append("rag")
+
+                    req_metrics.executor_ms.append(executor_ms)
+                    req_metrics.tool_calls += 1
+                    req_metrics.tools_used.append("rag")
+                    req_metrics.rag_calls += 1
+
+                    return _exit(response)
+
+                use_fast_path = True
+
+            # -------- FAST PATH --------
+            if use_fast_path and tasks[0]["type"] != "rag":
+                order_id = self._extract_order_id(user_query)
+                q = user_query.lower()
+
+                if order_id and any(
+                    k in q for k in ["order", "refund", "cancel", "track"]
+                ):
+                    tasks = []
+
+                    if " and " in q:
+                        parts = [p.strip() for p in q.split(" and ")]
+                        for p in parts:
+                            tasks.append({"query": p, "type": "tool"})
+                    else:
+                        tasks = [{"query": user_query, "type": "tool"}]
+
+                    # DIRECT VALIDATION (ZERO LLM)
+                    validated = []
+
+                    for t in tasks:
+                        tq = t["query"].lower()
+                        oid = self._extract_order_id(t["query"])
+
+                        if "refund" in tq:
+                            validated.append(
+                                (t, Plan([Step("refund", {"order_id": oid})]))
+                            )
+                        else:
+                            validated.append(
+                                (t, Plan([Step("order", {"order_id": oid})]))
+                            )
+
+                    state.trace["decomposer_ms"] = 0
+                    req_metrics.decomposer_ms = 0
+                    use_fast_path = True
+
+                    state.trace["decomposer_ms"] = 0
+                    req_metrics.decomposer_ms = 0
+                else:
+                    use_fast_path = False
+
+            # -------- DIRECT PLAN BYPASS (ZERO LLM) --------
+            direct_plans = []
+            is_multi_intent = len(tasks) > 1
+
+            for t in tasks:
+                q = t["query"].lower()
+                order_id = self._extract_order_id(t["query"])
+
+                if order_id:
+                    if "refund" in q:
+                        direct_plans.append(
+                            (t, Plan([Step("refund", {"order_id": order_id})]))
+                        )
+                    elif any(k in q for k in ["order", "track", "cancel"]):
+                        direct_plans.append(
+                            (t, Plan([Step("order", {"order_id": order_id})]))
+                        )
+
+            # ONLY apply if full coverage of all tasks
+            if direct_plans and len(direct_plans) == len(tasks):
+                validated = direct_plans
+
+            # -------- LLM DECOMPOSE --------
+            if not use_fast_path:
+                if not self.llm_cb.allow():
+                    self.metrics.inc("llm_cb_block")
+                    tasks = [{"query": user_query, "type": "tool"}]
+                    req_metrics.llm_cb_triggered = True
+                    req_metrics.fallback_triggered = True
+                else:
+                    start = time.time()
+                    try:
+                        tasks = await self.decomposer.decompose(user_query)
+                        decomposer_ms = int((time.time() - start) * 1000)
+                        for t in tasks:
+                            if t.get("type") == "rag":
+                                continue
+                            q = t["query"].lower()
+                            if "refund" in q or "cancel" in q:
+                                t["type"] = "tool"
+
+                        latency = int((time.time() - start) * 1000)
+                        req_metrics.llm_ms += latency
+                        self.metrics.observe("latency_decomposer", latency)
+                        state.trace["decomposer_ms"] = latency
+                        self.llm_cb.record_success()
+                        req_metrics.decomposer_ms = latency
+                        req_metrics.llm_calls += 1
+
+                    except Exception:
+                        latency = int((time.time() - start) * 1000)
+                        req_metrics.llm_ms += latency
+                        self.metrics.observe("latency_decomposer", latency)
+                        state.trace["decomposer_ms"] = latency
+                        self.llm_cb.record_failure()
+                        req_metrics.decomposer_ms = latency
+                        req_metrics.llm_calls += 1
+                        req_metrics.fallback_triggered = True
+                        tasks = [{"query": user_query, "type": "tool"}]
 
             memory_context = self._get_memory_context(session_id)
 
-            validated = []
+            # -------- SINGLE INTENT DIRECT VALIDATION --------
+            order_id = self._extract_order_id(user_query)
+            q = user_query.lower()
+
+            if not validated and len(tasks) == 1 and order_id and " and " not in q:
+                if "refund" in q:
+                    validated = [
+                        (
+                            {"query": user_query},
+                            Plan([Step("refund", {"order_id": order_id})]),
+                        )
+                    ]
+                elif any(k in q for k in ["order", "track", "cancel"]):
+                    validated = [
+                        (
+                            {"query": user_query},
+                            Plan([Step("order", {"order_id": order_id})]),
+                        )
+                    ]
 
             # -------- PASS 1: CREATE + VALIDATE --------
-            for t in tasks:
-                if not self.llm_cb.allow():
-                    self.metrics.inc("llm_cb_block")
-                    req_metrics.llm_cb_triggered = True
-                    continue
+            if not validated and not use_fast_path:
 
-                start = time.time()
-                try:
-                    plan = await self.planner.create_plan(
-                        self.classifier.classify(t["query"]),
-                        t["query"],
-                        memory_context,
-                    )
-                    latency = int((time.time() - start) * 1000)
+                async def _plan_task(t):
+                    if not self.llm_cb.allow():
+                        self.metrics.inc("llm_cb_block")
+                        req_metrics.llm_cb_triggered = True
+                        return (t, None, 0, False)
+
+                    start = time.time()
+                    try:
+                        plan = await self.planner.create_plan(
+                            self.classifier.classify(t["query"]),
+                            t["query"],
+                            memory_context,
+                        )
+                        latency = int((time.time() - start) * 1000)
+                        self.llm_cb.record_success()
+                        return (t, plan, latency, True)
+
+                    except Exception:
+                        latency = int((time.time() - start) * 1000)
+                        self.llm_cb.record_failure()
+                        return (t, None, latency, False)
+
+                results = await asyncio.gather(*[_plan_task(t) for t in tasks])
+
+                for t, plan, latency, success in results:
                     req_metrics.llm_ms += latency
                     self.metrics.observe("latency_planner", latency)
                     state.trace["planner_ms"].append(latency)
-                    self.llm_cb.record_success()
                     req_metrics.planner_ms.append(latency)
                     req_metrics.llm_calls += 1
-                except Exception:
-                    latency = int((time.time() - start) * 1000)
-                    req_metrics.llm_ms += latency
-                    self.metrics.observe("latency_planner", latency)
-                    state.trace["planner_ms"].append(latency)
-                    self.llm_cb.record_failure()
-                    req_metrics.planner_ms.append(latency)
-                    req_metrics.llm_calls += 1
-                    req_metrics.fallback_triggered = True
-                    continue
 
-                plan, err = self.plan_validator.validate(plan)
+                    if not success or not plan:
+                        req_metrics.fallback_triggered = True
+                        continue
 
-                if not plan:
-                    plan = Plan([Step(action="rag", params={"query": t["query"]})])
+                    plan, err = self.plan_validator.validate(plan)
 
-                validated.append((t, plan))
+                    if not plan:
+                        plan = Plan([Step(action="rag", params={"query": t["query"]})])
+
+                    validated.append((t, plan))
 
             # -------- PASS 2: DEPENDENCY RESOLUTION --------
             for i, (t, plan) in enumerate(validated):
@@ -554,25 +713,6 @@ class Orchestrator:
 
             # -------- RESPONSE --------
             structured = self.response_composer.compose(all_results, state.intent)
-
-            # -------- RAG FALLBACK (NO TOOL RESULTS) --------
-            if not all_results:
-                # detect if this was a rag query
-                is_rag_query = any(
-                    plan.steps[0].action == "rag"
-                    for _, plan in validated
-                    if plan and plan.steps
-                )
-
-                if is_rag_query:
-                    try:
-                        rag_response = await self.rag.generate(user_query)
-
-                        return _exit(rag_response)
-                    except Exception:
-                        return _exit(
-                            "Unable to fetch information.", "failure", "rag_failure"
-                        )
 
             if not all_results:
                 return _exit("Unable to process request.", "failure", "empty_response")

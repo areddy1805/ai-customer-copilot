@@ -35,6 +35,8 @@ class IntentClassifier:
         )
 
     def _is_refund(self, q):
+        if self._is_policy(q):
+            return False
         return any(k in q for k in ["refund", "money back", "return"])
 
     def _is_delivery_issue(self, q):
@@ -53,4 +55,6 @@ class IntentClassifier:
         return any(k in q for k in ["create ticket", "complaint", "issue", "problem"])
 
     def _is_policy(self, q):
-        return "policy" in q
+        return any(
+            k in q for k in ["policy", "rules", "process", "steps", "how", "guidelines"]
+        )
