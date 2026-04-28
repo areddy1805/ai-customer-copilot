@@ -1,0 +1,355 @@
+[
+  {
+    "id": "q1",
+    "query": "I want a refund for order 1277",
+    "type": "single_intent",
+    "expected_tool": "refund",
+    "expected_keywords": ["ORD1277", "failed"]
+  },
+  {
+    "id": "q2",
+    "query": "Cancel my order 9098",
+    "type": "single_intent",
+    "expected_tool": "order",
+    "expected_keywords": ["ORD9098", "failed"]
+  },
+  {
+    "id": "q3",
+    "query": "Refund order 4220",
+    "type": "single_intent",
+    "expected_tool": "refund",
+    "expected_keywords": ["ORD4220", "failed"]
+  },
+  {
+    "id": "q4",
+    "query": "Cancel order 3129",
+    "type": "single_intent",
+    "expected_tool": "order",
+    "expected_keywords": ["ORD3129", "failed"]
+  },
+  {
+    "id": "q5",
+    "query": "Where is my order 4104?",
+    "type": "single_intent",
+    "expected_tool": "order",
+    "expected_keywords": ["ORD4104", "failed"]
+  },
+  {
+    "id": "q6",
+    "query": "Cancel order 9221",
+    "type": "single_intent",
+    "expected_tool": "order",
+    "expected_keywords": ["ORD9221", "failed"]
+  },
+  {
+    "id": "q7",
+    "query": "Refund order 9624",
+    "type": "single_intent",
+    "expected_tool": "refund",
+    "expected_keywords": ["ORD9624", "failed"]
+  },
+  {
+    "id": "q8",
+    "query": "Track order 6900",
+    "type": "single_intent",
+    "expected_tool": "order",
+    "expected_keywords": ["ORD6900", "failed"]
+  },
+  {
+    "id": "q9",
+    "query": "Refund order 2189",
+    "type": "single_intent",
+    "expected_tool": "refund",
+    "expected_keywords": ["ORD2189", "failed"]
+  },
+  {
+    "id": "q10",
+    "query": "Refund order 6509",
+    "type": "single_intent",
+    "expected_tool": "refund",
+    "expected_keywords": ["ORD6509", "failed"]
+  },
+  {
+    "id": "q11",
+    "query": "Refund order 3643",
+    "type": "single_intent",
+    "expected_tool": "refund",
+    "expected_keywords": ["ORD3643", "failed"]
+  },
+  {
+    "id": "q12",
+    "query": "Track order 6076",
+    "type": "single_intent",
+    "expected_tool": "order",
+    "expected_keywords": ["ORD6076", "failed"]
+  },
+  {
+    "id": "q13",
+    "query": "Cancel order 3600",
+    "type": "single_intent",
+    "expected_tool": "order",
+    "expected_keywords": ["ORD3600", "failed"]
+  },
+  {
+    "id": "q14",
+    "query": "Cancel order 9926",
+    "type": "single_intent",
+    "expected_tool": "order",
+    "expected_keywords": ["ORD9926", "failed"]
+  },
+  {
+    "id": "q15",
+    "query": "Cancel order 6019",
+    "type": "single_intent",
+    "expected_tool": "order",
+    "expected_keywords": ["ORD6019", "failed"]
+  },
+
+  {
+    "id": "q16",
+    "query": "Cancel order 2360 and refund it",
+    "type": "multi_intent",
+    "expected_tool": ["order", "refund"],
+    "expected_keywords": ["ORD2360"]
+  },
+  {
+    "id": "q17",
+    "query": "Cancel order 9950 and refund it",
+    "type": "multi_intent",
+    "expected_tool": ["order", "refund"],
+    "expected_keywords": ["ORD9950"]
+  },
+  {
+    "id": "q18",
+    "query": "Track order 1650 and cancel it",
+    "type": "multi_intent",
+    "expected_tool": ["order", "order"],
+    "expected_keywords": ["ORD1650"]
+  },
+  {
+    "id": "q19",
+    "query": "Track order 4364 and cancel it",
+    "type": "multi_intent",
+    "expected_tool": ["order", "order"],
+    "expected_keywords": ["ORD4364"]
+  },
+  {
+    "id": "q20",
+    "query": "Cancel order 3226 and refund it",
+    "type": "multi_intent",
+    "expected_tool": ["order", "refund"],
+    "expected_keywords": ["ORD3226"]
+  },
+  {
+    "id": "q21",
+    "query": "Cancel order 9240 and refund it",
+    "type": "multi_intent",
+    "expected_tool": ["order", "refund"],
+    "expected_keywords": ["ORD9240"]
+  },
+  {
+    "id": "q22",
+    "query": "Track order 5845 and cancel it",
+    "type": "multi_intent",
+    "expected_tool": ["order", "order"],
+    "expected_keywords": ["ORD5845"]
+  },
+  {
+    "id": "q23",
+    "query": "Cancel order 1477 and refund it",
+    "type": "multi_intent",
+    "expected_tool": ["order", "refund"],
+    "expected_keywords": ["ORD1477"]
+  },
+  {
+    "id": "q24",
+    "query": "Cancel order 6372 and refund it",
+    "type": "multi_intent",
+    "expected_tool": ["order", "refund"],
+    "expected_keywords": ["ORD6372"]
+  },
+  {
+    "id": "q25",
+    "query": "Track order 6018 and cancel it",
+    "type": "multi_intent",
+    "expected_tool": ["order", "order"],
+    "expected_keywords": ["ORD6018"]
+  },
+  {
+    "id": "q26",
+    "query": "Cancel order 9744 and refund it",
+    "type": "multi_intent",
+    "expected_tool": ["order", "refund"],
+    "expected_keywords": ["ORD9744"]
+  },
+  {
+    "id": "q27",
+    "query": "Cancel order 5961 and refund it",
+    "type": "multi_intent",
+    "expected_tool": ["order", "refund"],
+    "expected_keywords": ["ORD5961"]
+  },
+  {
+    "id": "q28",
+    "query": "Cancel order 4403 and refund it",
+    "type": "multi_intent",
+    "expected_tool": ["order", "refund"],
+    "expected_keywords": ["ORD4403"]
+  },
+  {
+    "id": "q29",
+    "query": "Cancel order 9493 and refund it",
+    "type": "multi_intent",
+    "expected_tool": ["order", "refund"],
+    "expected_keywords": ["ORD9493"]
+  },
+  {
+    "id": "q30",
+    "query": "Cancel order 7286 and refund it",
+    "type": "multi_intent",
+    "expected_tool": ["order", "refund"],
+    "expected_keywords": ["ORD7286"]
+  },
+
+  {
+    "id": "q31",
+    "query": "How long does shipping take?",
+    "type": "rag",
+    "expected_tool": "rag",
+    "expected_keywords": ["shipping"]
+  },
+  {
+    "id": "q32",
+    "query": "What is your return policy?",
+    "type": "rag",
+    "expected_tool": "rag",
+    "expected_keywords": ["return"]
+  },
+  {
+    "id": "q33",
+    "query": "Explain refund policy",
+    "type": "rag",
+    "expected_tool": "rag",
+    "expected_keywords": ["refund"]
+  },
+  {
+    "id": "q34",
+    "query": "Delivery time details",
+    "type": "rag",
+    "expected_tool": "rag",
+    "expected_keywords": ["delivery"]
+  },
+  {
+    "id": "q35",
+    "query": "How do returns work?",
+    "type": "rag",
+    "expected_tool": "rag",
+    "expected_keywords": ["return"]
+  },
+  {
+    "id": "q36",
+    "query": "Shipping duration India",
+    "type": "rag",
+    "expected_tool": "rag",
+    "expected_keywords": ["shipping"]
+  },
+  {
+    "id": "q37",
+    "query": "Refund rules for damaged product",
+    "type": "rag",
+    "expected_tool": "rag",
+    "expected_keywords": ["damaged"]
+  },
+  {
+    "id": "q38",
+    "query": "When will I get refund after return",
+    "type": "rag",
+    "expected_tool": "rag",
+    "expected_keywords": ["refund"]
+  },
+  {
+    "id": "q39",
+    "query": "Return steps",
+    "type": "rag",
+    "expected_tool": "rag",
+    "expected_keywords": ["return"]
+  },
+  {
+    "id": "q40",
+    "query": "Shipping policy details",
+    "type": "rag",
+    "expected_tool": "rag",
+    "expected_keywords": ["shipping"]
+  },
+
+  {
+    "id": "q41",
+    "query": "Cancel it",
+    "type": "edge",
+    "expected_tool": "rag",
+    "expected_keywords": []
+  },
+  {
+    "id": "q42",
+    "query": "Refund",
+    "type": "edge",
+    "expected_tool": "rag",
+    "expected_keywords": []
+  },
+  {
+    "id": "q43",
+    "query": "Cancel it now",
+    "type": "edge",
+    "expected_tool": "rag",
+    "expected_keywords": []
+  },
+  {
+    "id": "q44",
+    "query": "Refund now",
+    "type": "edge",
+    "expected_tool": "rag",
+    "expected_keywords": []
+  },
+  {
+    "id": "q45",
+    "query": "asdfghjkl",
+    "type": "edge",
+    "expected_tool": "rag",
+    "expected_keywords": []
+  },
+  {
+    "id": "q46",
+    "query": "Cancel order and refund",
+    "type": "edge",
+    "expected_tool": "rag",
+    "expected_keywords": []
+  },
+  {
+    "id": "q47",
+    "query": "Refund my order",
+    "type": "edge",
+    "expected_tool": "rag",
+    "expected_keywords": []
+  },
+  {
+    "id": "q48",
+    "query": "Cancel order",
+    "type": "edge",
+    "expected_tool": "rag",
+    "expected_keywords": []
+  },
+  {
+    "id": "q49",
+    "query": "Refund order",
+    "type": "edge",
+    "expected_tool": "rag",
+    "expected_keywords": []
+  },
+  {
+    "id": "q50",
+    "query": "",
+    "type": "edge",
+    "expected_tool": "rag",
+    "expected_keywords": []
+  }
+]

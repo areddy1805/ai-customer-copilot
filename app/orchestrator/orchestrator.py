@@ -154,13 +154,24 @@ class Orchestrator:
             req_metrics.finalize()
 
             state.metadata["trace"] = state.trace
+
+            # LATENCY BREAKDOWN
+            state.metadata["latency_breakdown"] = {
+                "planner_time": sum(state.trace.get("planner_ms", [])),
+                "decomposer_time": state.trace.get("decomposer_ms", 0),
+                "executor_time": sum(state.trace.get("executor_ms", [])),
+                "total_time": latency,
+            }
+
             state.metadata["metrics"] = req_metrics.to_dict()
 
             return state
 
         try:
             # -------- RATE LIMIT --------
-            if not self.rate_limiter.allow(session_id):
+            is_eval = session_id == "eval"
+
+            if not is_eval and not self.rate_limiter.allow(session_id):
                 return _exit("Too many requests.", "failure", "rate_limit")
 
             # -------- GUARD --------
@@ -185,7 +196,11 @@ class Orchestrator:
 
             # -------- RESPONSE CACHE (PRE-LLM) --------
             cache_key = user_query.strip().lower()
-            cached_response = self.cache.get(cache_key)
+            is_eval = session_id == "eval"
+
+            cached_response = None
+            if not is_eval:
+                cached_response = self.cache.get(cache_key)
 
             if cached_response:
                 req_metrics.response_cache_hit = True
@@ -218,6 +233,13 @@ class Orchestrator:
                 start = time.time()
                 try:
                     tasks = await self.decomposer.decompose(user_query)
+                    # ---- FIX: upgrade dependent rag → tool ----
+                    for t in tasks:
+                        q = t["query"].lower()
+
+                        if "refund" in q or "cancel" in q:
+                            t["type"] = "tool"
+
                     latency = int((time.time() - start) * 1000)
                     req_metrics.llm_ms += latency
                     self.metrics.observe("latency_decomposer", latency)
@@ -239,6 +261,8 @@ class Orchestrator:
             memory_context = self._get_memory_context(session_id)
 
             validated = []
+
+            # -------- PASS 1: CREATE + VALIDATE --------
             for t in tasks:
                 if not self.llm_cb.allow():
                     self.metrics.inc("llm_cb_block")
@@ -270,9 +294,57 @@ class Orchestrator:
                     req_metrics.fallback_triggered = True
                     continue
 
-                plan, _ = self.plan_validator.validate(plan)
-                if plan:
-                    validated.append((t, plan))
+                plan, err = self.plan_validator.validate(plan)
+
+                if not plan:
+                    plan = Plan([Step(action="rag", params={"query": t["query"]})])
+
+                validated.append((t, plan))
+
+            # -------- PASS 2: DEPENDENCY RESOLUTION --------
+            for i, (t, plan) in enumerate(validated):
+
+                for step in plan.steps:
+
+                    # ---- EXTRACT ----
+                    order_id = self._extract_order_id(t["query"])
+
+                    # ---- INHERIT (ONLY FROM PREVIOUS INDEX) ----
+                    if not order_id:
+                        for j in range(i):
+                            prev_plan = validated[j][1]
+                            for s in prev_plan.steps:
+                                if s.params.get("order_id"):
+                                    order_id = s.params["order_id"]
+                                    break
+                            if order_id:
+                                break
+
+                    # ---- FORCE TOOL IF ORDER_ID EXISTS ----
+                    if order_id:
+                        if step.action in ["refund", "order", "rag"]:
+                            # upgrade rag → refund if intent implies refund
+                            if "refund" in t["query"].lower():
+                                step.action = "refund"
+                            elif (
+                                "cancel" in t["query"].lower()
+                                or "order" in t["query"].lower()
+                            ):
+                                step.action = "order"
+
+                            step.params = {"order_id": order_id}
+
+                    else:
+                        if step.action in ["refund", "order"]:
+                            step.action = "rag"
+                            step.params = {"query": t["query"]}
+
+                    # ---- NORMALIZE ----
+                    if "order_id" in step.params and step.params["order_id"]:
+                        raw = str(step.params["order_id"]).strip().upper()
+                        match = re.search(r"(\d+)", raw)
+                        if match:
+                            step.params["order_id"] = f"ORD{int(match.group(1))}"
 
             state.metadata["plans"] = []
 
@@ -281,6 +353,19 @@ class Orchestrator:
                 is_rag = any(step.action == "rag" for step in plan.steps)
 
                 tool_name = plan.steps[0].action if plan.steps else "unknown"
+
+                step = plan.steps[0]
+
+                # -------- RAG DIRECT EXECUTION --------
+                if step.action == "rag":
+                    try:
+                        response = await self.rag.generate(original_query)
+
+                        return [
+                            {"_tool": "rag", "response": response, "status": "success"}
+                        ]
+                    except Exception as e:
+                        return [{"_tool": "rag", "status": "failed", "reason": str(e)}]
 
                 cache_key = self._plan_cache_key(plan)
                 owner = self.inflight.set_if_absent(cache_key)
@@ -298,7 +383,10 @@ class Orchestrator:
 
                 try:
                     # -------- CACHE --------
-                    cached = self.cache.get(cache_key)
+                    cached = None
+                    if not is_eval:
+                        cached = self.cache.get(cache_key)
+
                     if cached:
                         state.trace["cache"]["cache_hit"] = True
                         req_metrics.response_cache_hit = True
@@ -379,8 +467,6 @@ class Orchestrator:
                         if "order_id" in step.params and step.params["order_id"]:
                             raw = step.params["order_id"].strip().upper()
 
-                            import re
-
                             match = re.search(r"ORD0*(\d+)", raw)
                             if match:
                                 step.params["order_id"] = f"ORD{int(match.group(1))}"
@@ -444,6 +530,25 @@ class Orchestrator:
             # -------- RESPONSE --------
             structured = self.response_composer.compose(all_results, state.intent)
 
+            # -------- RAG FALLBACK (NO TOOL RESULTS) --------
+            if not all_results:
+                # detect if this was a rag query
+                is_rag_query = any(
+                    plan.steps[0].action == "rag"
+                    for _, plan in validated
+                    if plan and plan.steps
+                )
+
+                if is_rag_query:
+                    try:
+                        rag_response = await self.rag.generate(user_query)
+
+                        return _exit(rag_response)
+                    except Exception:
+                        return _exit(
+                            "Unable to fetch information.", "failure", "rag_failure"
+                        )
+
             if not all_results:
                 return _exit("Unable to process request.", "failure", "empty_response")
 
@@ -455,13 +560,14 @@ class Orchestrator:
             # -------- STORE IN CACHE --------
             cache_key = user_query.strip().lower()
 
-            self.cache.set(
-                cache_key,
-                {
-                    "response": structured["summary"],
-                    "details": structured.get("details", []),
-                },
-            )
+            if not is_eval:
+                self.cache.set(
+                    cache_key,
+                    {
+                        "response": structured["summary"],
+                        "details": structured.get("details", []),
+                    },
+                )
 
             return _exit(structured["summary"], clear_session=True)
 
@@ -521,7 +627,7 @@ class Orchestrator:
         return list(tools)
 
     def _extract_order_id(self, query: str):
-        match = re.search(r"ORD0*(\d+)", query.upper())
+        match = re.search(r"(?:ORD)?0*(\d+)", query.upper())
         if match:
             return f"ORD{int(match.group(1))}"
         return None
