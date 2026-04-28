@@ -90,6 +90,9 @@ class Orchestrator:
 
         self.session_state = {}
 
+        self.fast_llm = self.llm  # existing (cheap / local / rule-based)
+        self.strong_llm = self.llm  # placeholder for upgrade (e.g., GPT-4)
+
     # ================= RUN =================
 
     async def run(self, user_query: str, session_id: str) -> ConversationState:
@@ -104,6 +107,8 @@ class Orchestrator:
         req_metrics.llm_provider = type(self.llm).__name__
         req_metrics.embedding_provider = "local"
         req_metrics.search_provider = "local"
+        req_metrics.metadata = {}
+        req_metrics.cache_hit = False
 
         def _to_str(resp):
             if isinstance(resp, str):
@@ -176,9 +181,14 @@ class Orchestrator:
                 "total_time_ms": total_time,
             }
 
-            # -------- TOKEN TRACKING --------
+            # ---- TOKEN TRACKING ----
             req_metrics.input_tokens = getattr(self.llm, "last_input_tokens", 0)
             req_metrics.output_tokens = getattr(self.llm, "last_output_tokens", 0)
+
+            # fallback if LLM not used
+            if req_metrics.input_tokens == 0 and req_metrics.output_tokens == 0:
+                req_metrics.input_tokens = len(user_query.split())
+                req_metrics.output_tokens = len(response.split())
 
             state.metadata["metrics"] = req_metrics.to_dict()
 
@@ -233,16 +243,22 @@ class Orchestrator:
                 cached_response = self.cache.get(cache_key)
 
             if cached_response:
+                # ---- CACHE METRICS ----
                 req_metrics.response_cache_hit = True
+                req_metrics.cache_hit = True
+                self.metrics.inc("cache_hit_total")
+
+                # ---- ZERO LLM ----
                 req_metrics.llm_calls = 0
                 req_metrics.llm_ms = 0
 
+                # ---- STATE ----
                 state.intent = self.classifier.classify(user_query)
                 state.metadata["route"] = "cache"
                 state.metadata["plans"] = []
-
                 state.metadata["details"] = cached_response.get("details", [])
 
+                # ---- TRACE ----
                 state.trace["cache"]["cache_hit"] = True
 
                 return _exit(cached_response["response"])
@@ -395,7 +411,11 @@ class Orchestrator:
                 else:
                     start = time.time()
                     try:
-                        tasks = await self.decomposer.decompose(user_query)
+                        llm = self.fast_llm
+
+                        tasks = await self.decomposer.decompose(user_query, llm=llm)
+
+                        req_metrics.metadata["model_used"] = "fast"
                         decomposer_ms = int((time.time() - start) * 1000)
                         for t in tasks:
                             if t.get("type") == "rag":
@@ -456,10 +476,19 @@ class Orchestrator:
 
                     start = time.time()
                     try:
+                        # ---- ROUTING LOGIC ----
+                        if len(t["query"].split()) > 10:
+                            llm = self.strong_llm
+                            req_metrics.metadata["model_used"] = "strong"
+                        else:
+                            llm = self.fast_llm
+                            req_metrics.metadata["model_used"] = "fast"
+
                         plan = await self.planner.create_plan(
                             self.classifier.classify(t["query"]),
                             t["query"],
                             memory_context,
+                            llm=llm,
                         )
                         latency = int((time.time() - start) * 1000)
                         self.llm_cb.record_success()

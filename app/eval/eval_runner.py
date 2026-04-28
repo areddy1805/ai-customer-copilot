@@ -106,12 +106,13 @@ def run_eval():
     retry_total = 0
     tool_failures = 0
 
-    # -------- NEW AGGREGATION --------
+    # -------- AGGREGATION --------
     planner_sum = 0
     decomposer_sum = 0
     executor_sum = 0
     total_sum = 0
     latency_count = 0
+    cache_hits = 0
 
     for item in dataset:
         query = item["query"]
@@ -135,6 +136,9 @@ def run_eval():
 
         metrics = response_json.get("metrics", {})
 
+        if metrics.get("cache_hit"):
+            cache_hits += 1
+
         if metrics.get("fallback_triggered"):
             fallback_count += 1
 
@@ -145,7 +149,7 @@ def run_eval():
 
         latency_breakdown = response_json.get("latency_breakdown", {})
 
-        # -------- NEW LATENCY AGGREGATION --------
+        # -------- LATENCY AGGREGATION --------
         if latency_breakdown:
             planner = sum(latency_breakdown.get("planner_ms", []))
             decomposer = latency_breakdown.get("decomposer_ms", 0)
@@ -267,7 +271,7 @@ def run_eval():
             print(f"LLM: {((planner_avg+decomposer_avg)/total_avg)*100:.2f}%")
             print(f"Execution: {(executor_avg/total_avg)*100:.2f}%")
 
-    # -------- NEW AGGREGATED LATENCY --------
+    # -------- AGGREGATED LATENCY --------
     if latency_count > 0:
         avg_planner = planner_sum / latency_count
         avg_decomposer = decomposer_sum / latency_count
@@ -309,6 +313,9 @@ def run_eval():
         print("\n=== SYSTEM TIME BREAKDOWN ===")
         print(f"LLM: {(avg_llm/total_time)*100:.2f}%")
         print(f"Execution: {(avg_exec/total_time)*100:.2f}%")
+
+    print("\n=== CACHE METRICS ===")
+    print(f"Cache Hit Rate: {(cache_hits/total)*100:.2f}%")
 
     print("\n=== RELIABILITY METRICS ===")
     print(f"Fallback Rate: {(fallback_count/total)*100:.2f}%")

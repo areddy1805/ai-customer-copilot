@@ -1,138 +1,80 @@
 # Failure Modes
 
-## 1. Planning Failure
+## 1. planning_failure
 
 **Definition**
-System fails to select correct tool or produces no tool.
+System selects wrong tool or fails to select any tool.
 
 **Cause**
-- Weak intent classification
-- Missing rules / decomposition errors
-- Ambiguous query without fallback
+- incorrect intent classification
+- decomposition errors
+- missing rule overrides
 
 **Detection**
 - actual_tool != expected_tool
 - actual_tool = []
 
-**Example**
-"Refund rules for damaged product" → classified as refund_request instead of rag
-
 **Mitigation**
-- Rule-based overrides for high-confidence intents
-- Intent-aware guards
-- RAG fallback for missing structured inputs
-
+- strengthen rules (fast-path)
+- improve classifier
+- enforce fallback paths
 
 ---
 
-## 2. Retrieval Failure
+## 2. retrieval_failure
 
 **Definition**
-RAG returns incorrect / irrelevant information.
+RAG returns incorrect or irrelevant information.
 
 **Cause**
-- Poor embeddings
-- Bad chunking
-- Missing documents
-- Weak similarity search
+- poor embeddings
+- weak retrieval
+- missing documents
 
 **Detection**
+- tool_used = rag
 - keyword_match = 0
-- tool_correct = 1 but response incorrect
-
-**Example**
-Policy question returns unrelated answer
 
 **Mitigation**
-- Improve chunking strategy
-- Add metadata filtering
-- Re-rank retrieved documents
-
+- improve embeddings
+- reranking
+- better chunking
 
 ---
 
-## 3. Tool Failure
+## 3. tool_failure
 
 **Definition**
-Tool executes but returns failure or error.
+Tool executes but fails or returns error.
 
 **Cause**
-- Invalid inputs (e.g., order not delivered)
-- Downstream system issues
-- API/database errors
+- invalid inputs
+- downstream failure
+- business rule rejection
 
 **Detection**
-- response.status = "failed"
 - metrics.error present
-
-**Example**
-Refund fails because order not delivered
+- tool response status = failed
 
 **Mitigation**
-- Input validation before execution
-- Retry mechanisms
-- Graceful fallback messaging
-
+- input validation
+- retries
+- fallback handling
 
 ---
 
-## 4. System Failure
+## 4. unknown
 
 **Definition**
-Infrastructure or orchestration breakdown.
+Failure not classified by system.
 
 **Cause**
-- Rate limiting
-- Guard blocks
-- Timeout / crash
-- Circuit breaker activation
+- unhandled edge cases
+- unexpected exceptions
 
 **Detection**
-- error in ["rate_limit", "guard_block"]
-- fallback_triggered = True
-
-**Example**
-Too many requests → blocked
+- failure_type = unknown
 
 **Mitigation**
-- Backoff + retry
-- Circuit breaker tuning
-- Request throttling
-
-
----
-
-## 5. Latency Failure
-
-**Definition**
-System responds correctly but exceeds acceptable latency.
-
-**Cause**
-- Slow RAG retrieval
-- Heavy tool execution
-- External dependencies
-
-**Detection**
-- total_time_ms > threshold
-- executor_ms dominant
-
-**Example**
-RAG queries taking 3–4 seconds
-
-**Mitigation**
-- Caching (semantic + response)
-- Index optimization
-- Async parallel execution
-
-
----
-
-## Summary Table
-
-| Failure Type       | Layer        | Primary Metric    |
-|------------------|-------------|----------------------|
-| Planning Failure | Orchestrator | tool_correct        |
-| Retrieval Failure| RAG         | keyword_match        |
-| Tool Failure     | Tools       | error / status       |
-| System Failure   | Infra       | fallback / error     |
-| Latency Failure  | Performance | total_time_ms        |
+- extend taxonomy
+- add logging
