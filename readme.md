@@ -1,15 +1,18 @@
-# AI Customer Support Copilot (Hybrid Deterministic AI System)
+# AI Customer Support Copilot (Deterministic AI Orchestration System)
 
 ![Python](https://img.shields.io/badge/Python-3.9+-blue)
 ![FastAPI](https://img.shields.io/badge/FastAPI-Backend-green)
-![LLM](https://img.shields.io/badge/LLM-Hybrid%20(Local%20%2B%20Azure)-orange)
-![RAG](https://img.shields.io/badge/RAG-Azure%20AI%20Search%20%7C%20Local-blue)
+![LLM](https://img.shields.io/badge/LLM-Fallback%20(Local%20%7C%20Azure)-orange)
+![RAG](https://img.shields.io/badge/RAG-Local%20%7C%20Azure-blue)
+![Providers](https://img.shields.io/badge/Providers-Pluggable%20(Local%20%7C%20Azure)-informational)
 ![Streaming](https://img.shields.io/badge/Streaming-SSE-blueviolet)
 ![Orchestration](https://img.shields.io/badge/Execution-Deterministic-critical)
+![Observability](https://img.shields.io/badge/Observability-Metrics%20%2B%20Tracing-purple)
+![Evaluation](https://img.shields.io/badge/Evaluation-Automated%20Benchmarks-yellow)
 ![Status](https://img.shields.io/badge/Status-Production--Ready-brightgreen)
 ![License](https://img.shields.io/badge/License-MIT-lightgrey)
 
-Production-grade **deterministic AI execution system** with hybrid cloud integration (Local ↔ Azure), strict orchestration control, tool-first execution, and enterprise-ready reliability.
+Production-grade **deterministic AI orchestration system** with rule-first execution, zero-LLM fast path, bounded agent loop, and full evaluation + observability stack.
 
 ---
 
